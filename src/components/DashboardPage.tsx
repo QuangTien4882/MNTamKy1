@@ -26,14 +26,16 @@ const BackupPrompt: React.FC = () => {
         const from = formatDate(prevMonth);
         const to = formatDate(new Date(prevMonth.getFullYear(), prevMonth.getMonth() + 1, 0));
 
-        await exportData({
-            format,
-            dateRange: { from, to },
-            classNames: classes.map(c => c.name)
-        });
-        
-        dismissBackupPrompt();
-        setIsLoading(false);
+        try {
+            await exportData({
+                format,
+                dateRange: { from, to },
+                classNames: classes.map(c => c.name)
+            });
+            dismissBackupPrompt();
+        } finally {
+            setIsLoading(false);
+        }
     };
 
     const now = new Date();
@@ -124,11 +126,10 @@ const ActionButton: React.FC<{ onClick: () => void, text: string, icon: React.Re
 );
 
 const DashboardPage: React.FC<DashboardPageProps> = ({ setView }) => {
-    const { classes, getRegistrations, requestEdit, dataVersion, showBackupPrompt, sendReminderForMissingClasses } = useData();
+    const { classes, getRegistrations, getRegisteredClasses, requestEdit, dataVersion, showBackupPrompt } = useData();
     const { currentUser } = useAuth();
     const [dashboardData, setDashboardData] = useState<any>(null);
     const [isLoading, setIsLoading] = useState(true);
-    const [isSendingReminder, setIsSendingReminder] = useState(false);
 
     useEffect(() => {
         const fetchDashboardData = async () => {
@@ -156,15 +157,31 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ setView }) => {
             };
             const registeredClassesToday = new Set<string>();
 
+            // Cross-class status via RPC (works for teachers too, whose RLS only
+            // exposes their own class rows). Fall back to row-based inference.
+            const registeredFromRpc = await getRegisteredClasses(currentDayStr);
+            if (registeredFromRpc.length > 0) {
+                registeredFromRpc.forEach(name => registeredClassesToday.add(name));
+            } else {
+                registrations.forEach(reg => {
+                    if (reg.date === currentDayStr) {
+                        if (reg.mealType === MealType.KidsLunch && reg.count > 0) {
+                            registeredClassesToday.add(reg.className);
+                        }
+                        if (reg.mealType === MealType.TeachersLunch && reg.count > 0) {
+                            registeredClassesToday.add(reg.className);
+                        }
+                    }
+                });
+            }
+
             registrations.forEach(reg => {
                 if (reg.date === currentDayStr) {
                     if (reg.mealType === MealType.KidsLunch) {
                         totals[MealType.KidsLunch] += reg.count;
-                        if (reg.count > 0) registeredClassesToday.add(reg.className);
                     }
                     if (reg.mealType === MealType.TeachersLunch) {
                         totals[MealType.TeachersLunch] += reg.count;
-                        if (reg.count > 0) registeredClassesToday.add(reg.className);
                     }
                 } else if (reg.date === tomorrowStr && reg.mealType === MealType.KidsBreakfast) {
                     totals[MealType.KidsBreakfast] += reg.count;
@@ -188,20 +205,12 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ setView }) => {
         };
 
         fetchDashboardData();
-    }, [classes, getRegistrations, currentUser, dataVersion]);
+    }, [classes, getRegistrations, getRegisteredClasses, currentUser, dataVersion]);
     
     const handleEdit = () => {
         if (dashboardData?.currentDay && currentUser?.assignedClass) {
             requestEdit(currentUser.assignedClass, dashboardData.currentDay);
             setView(View.Register);
-        }
-    }
-
-    const handleSendReminder = async () => {
-        if (dashboardData?.missingClasses.length > 0) {
-            setIsSendingReminder(true);
-            await sendReminderForMissingClasses(dashboardData.missingClasses, dashboardData.currentDay);
-            setIsSendingReminder(false);
         }
     }
 
@@ -283,15 +292,6 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ setView }) => {
                      <div className="mt-4 flex flex-wrap gap-4">
                         <ActionButton onClick={() => setView(View.List)} text="Xem danh sách" icon={<svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor"><path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z" /><path fillRule="evenodd" d="M4 5a2 2 0 012-2h8a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clipRule="evenodd" /></svg>} className="bg-teal-600 hover:bg-teal-700" />
                         <ActionButton onClick={() => setView(View.Summary)} text="Xem báo cáo" icon={<svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor"><path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" /></svg>} className="bg-blue-600 hover:bg-blue-700" />
-                        {missingClasses.length > 0 && (currentUser?.role === Role.Admin || currentUser?.role === Role.BGH) && (
-                            <ActionButton
-                                onClick={handleSendReminder}
-                                text={isSendingReminder ? 'Đang gửi...' : `Gửi nhắc nhở (${missingClasses.length} lớp)`}
-                                icon={isSendingReminder ? <LoadingSpinner /> : <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor"><path d="M10 2a6 6 0 00-6 6v3.586l-1.707 1.707A1 1 0 003 15h14a1 1 0 00.707-1.707L16 11.586V8a6 6 0 00-6-6zM10 18a3 3 0 01-3-3h6a3 3 0 01-3 3z" /></svg>}
-                                className="bg-yellow-500 hover:bg-yellow-600 disabled:bg-yellow-300"
-                                disabled={isSendingReminder}
-                            />
-                        )}
                      </div>
                 </div>
             )}

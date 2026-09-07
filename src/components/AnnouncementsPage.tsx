@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useData } from '../contexts/DataContext';
 import { useAuth } from '../contexts/AuthContext';
-import { useUI } from '../contexts/UIContext';
 import { Announcement, Role } from '../types';
 
 const LoadingSpinner: React.FC<{ size?: string; color?: string }> = ({ size = 'h-5 w-5', color = 'text-white' }) => (
@@ -64,9 +63,11 @@ const AnnouncementModal: React.FC<{
 };
 
 const AnnouncementsPage: React.FC = () => {
-    const { announcements, addAnnouncement, updateAnnouncement, deleteAnnouncement, markAnnouncementsAsRead, isAnnouncementRead } = useData();
+    const { announcements, hasMoreAnnouncements, loadMoreAnnouncements, addAnnouncement, updateAnnouncement, deleteAnnouncement, markAnnouncementsAsRead, isAnnouncementRead } = useData();
     const { currentUser } = useAuth();
-    const { isLoading } = useUI();
+    const [isPageLoading, setIsPageLoading] = useState(() => announcements.length === 0);
+    const [isSaving, setIsSaving] = useState(false);
+    const [isLoadingMore, setIsLoadingMore] = useState(false);
 
     const [editingAnnouncement, setEditingAnnouncement] = useState<Announcement | null>(null);
     const [isCreating, setIsCreating] = useState(false);
@@ -135,16 +136,34 @@ const AnnouncementsPage: React.FC = () => {
     }, [announcements, hiddenAnnouncements]);
 
 
+    useEffect(() => {
+        setIsPageLoading(announcements.length === 0);
+    }, [announcements]);
+
     const handleSave = async (data: Omit<Announcement, 'id' | 'createdAt' | 'createdBy' | 'createdById' | 'readBy'>) => {
-        let success = false;
-        if (editingAnnouncement) {
-            success = await updateAnnouncement(editingAnnouncement.id, data);
-        } else {
-            success = await addAnnouncement(data);
+        setIsSaving(true);
+        try {
+            let success = false;
+            if (editingAnnouncement) {
+                success = await updateAnnouncement(editingAnnouncement.id, data);
+            } else {
+                success = await addAnnouncement(data);
+            }
+            if (success) {
+                setEditingAnnouncement(null);
+                setIsCreating(false);
+            }
+        } finally {
+            setIsSaving(false);
         }
-        if (success) {
-            setEditingAnnouncement(null);
-            setIsCreating(false);
+    };
+
+    const handleLoadMore = async () => {
+        setIsLoadingMore(true);
+        try {
+            loadMoreAnnouncements();
+        } finally {
+            setIsLoadingMore(false);
         }
     };
 
@@ -174,7 +193,7 @@ const AnnouncementsPage: React.FC = () => {
                 )}
             </div>
 
-            {isLoading ? (
+            {isPageLoading ? (
                 <div className="text-center p-8"><LoadingSpinner size="h-8 w-8" color="text-teal-600" /></div>
             ) : visibleAnnouncements.length === 0 && hiddenCount === 0 ? (
                 <p className="text-center text-gray-500 dark:text-gray-400 py-10">Chưa có thông báo nào.</p>
@@ -223,6 +242,15 @@ const AnnouncementsPage: React.FC = () => {
                     })}
                 </div>
             )}
+
+            {hasMoreAnnouncements && (
+                <div className="text-center pt-4">
+                    <button onClick={handleLoadMore} disabled={isLoadingMore} className="px-6 py-2 text-sm font-medium rounded-md text-teal-700 dark:text-teal-300 bg-teal-50 dark:bg-teal-900/40 hover:bg-teal-100 dark:hover:bg-teal-900/60 disabled:opacity-60 flex items-center gap-2 mx-auto">
+                        {isLoadingMore ? <LoadingSpinner size="h-4 w-4" color="text-teal-600" /> : null}
+                        Tải thêm thông báo
+                    </button>
+                </div>
+            )}
             
             {hiddenCount > 0 && (
                 <div className="text-center text-sm text-gray-500 dark:text-gray-400 pt-4">
@@ -238,7 +266,7 @@ const AnnouncementsPage: React.FC = () => {
                     announcement={editingAnnouncement} 
                     onClose={() => { setIsCreating(false); setEditingAnnouncement(null); }} 
                     onSave={handleSave} 
-                    isSaving={isLoading}
+                    isSaving={isSaving}
                 />
             )}
             

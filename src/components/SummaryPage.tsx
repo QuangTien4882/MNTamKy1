@@ -336,10 +336,17 @@ const SummaryPage: React.FC<{setView: (view: View) => void}> = ({setView}) => {
         };
         setEditedMeals(initialMeals);
         
-        const { registrations: originals } = await getRegistrations({ classNames: [item.className], dates: [item.date], getAll: true });
-        setOriginalRegistrationsForEdit(originals);
-        setIsLoading(false);
-    }, [getRegistrations, isReadOnly, isContextLoading, handleCancelEdit]);
+        try {
+            const { registrations: originals } = await getRegistrations({ classNames: [item.className], dates: [item.date], getAll: true });
+            setOriginalRegistrationsForEdit(originals);
+        } catch (error) {
+            console.error("Failed to load edit data", error);
+            addToast("Không thể tải dữ liệu chỉnh sửa.", 'error');
+            setEditingRowKey(null);
+        } finally {
+            setIsLoading(false);
+        }
+    }, [getRegistrations, isReadOnly, isContextLoading, handleCancelEdit, addToast]);
 
     const handleMealChange = useCallback((mealType: MealType, value: string) => {
         setEditedMeals(prev => ({...prev, [mealType]: value}));
@@ -371,13 +378,20 @@ const SummaryPage: React.FC<{setView: (view: View) => void}> = ({setView}) => {
             await updateRegistrations(updates, originalRegistrationsForEdit);
             addToast(`Cập nhật thành công cho lớp ${className}.`, 'success');
             handleCancelEdit();
-        } catch (error) {
+        } catch (error: any) {
             console.error("Update failed", error);
-            handleCancelEdit();
+            if (error?.message === 'STALE_DATA') {
+                // Data changed elsewhere while the user was editing. Keep the
+                // user's edits and refresh the baseline so a retry can succeed.
+                const { registrations: freshOriginals } = await getRegistrations({ classNames: [className], dates: [date], getAll: true });
+                setOriginalRegistrationsForEdit(freshOriginals);
+            } else {
+                handleCancelEdit();
+            }
         } finally {
             setSavingRowKey(null);
         }
-    }, [editingRowKey, editedMeals, originalRegistrationsForEdit, updateRegistrations, addToast, handleCancelEdit]);
+    }, [editingRowKey, editedMeals, originalRegistrationsForEdit, updateRegistrations, addToast, handleCancelEdit, getRegistrations]);
     
     const handleDelete = useCallback(async () => {
         if (!deletingItem) return;
@@ -450,11 +464,23 @@ const SummaryPage: React.FC<{setView: (view: View) => void}> = ({setView}) => {
          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="flex items-center justify-between">
               <label className="text-sm font-medium text-gray-700 dark:text-gray-300 shrink-0 pr-4">Từ ngày</label>
-              <CustomDatePicker value={dateRange.from} onChange={d => setDateRange(r => ({ ...r, from: d }))} />
+              <CustomDatePicker value={dateRange.from} onChange={d => {
+                    if (dateRange.to && d && d > dateRange.to) {
+                        addToast("Ngày bắt đầu không thể sau ngày kết thúc.", 'error');
+                        return;
+                    }
+                    setDateRange(r => ({ ...r, from: d }));
+                }} />
             </div>
             <div className="flex items-center justify-between">
               <label htmlFor="toDate" className="text-sm font-medium text-gray-700 dark:text-gray-300 shrink-0 pr-4">Đến ngày</label>
-              <CustomDatePicker value={dateRange.to} onChange={d => setDateRange(r => ({ ...r, to: d }))} />
+              <CustomDatePicker value={dateRange.to} onChange={d => {
+                    if (dateRange.from && d && d < dateRange.from) {
+                        addToast("Ngày kết thúc không thể trước ngày bắt đầu.", 'error');
+                        return;
+                    }
+                    setDateRange(r => ({ ...r, to: d }));
+                }} />
             </div>
              <div className="flex items-center justify-between">
               <label className="text-sm font-medium text-gray-700 dark:text-gray-300 shrink-0 pr-4">Lớp</label>

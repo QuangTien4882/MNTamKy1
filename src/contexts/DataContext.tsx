@@ -1,4 +1,4 @@
-import React, { createContext, useState, useEffect, useCallback, useContext, ReactNode, useMemo } from 'react';
+import React, { createContext, useState, useEffect, useCallback, useContext, ReactNode, useMemo, useRef } from 'react';
 import { MealRegistration, ClassInfo, User, Role, Announcement, AuditLog, AuditLogAction, MealType } from '../types';
 import { supabase } from '../supabaseClient';
 import type { RealtimeChannel } from '@supabase/supabase-js';
@@ -12,6 +12,8 @@ interface DataContextType {
   users: User[];
   announcements: Announcement[];
   unreadAnnouncementsCount: number;
+  hasMoreAnnouncements: boolean;
+  loadMoreAnnouncements: () => void;
   dataVersion: number; // Used to trigger refetches in components
   recentlyUpdatedKeys: Set<string>; // For UI highlighting
   showBackupPrompt: boolean;
@@ -54,13 +56,14 @@ interface DataContextType {
   deleteAuditLogs: (logIds: string[]) => Promise<void>;
   exportData: (options: { format: 'csv' | 'pdf', dateRange: { from: string, to: string }, classNames: string[] }) => Promise<void>;
   dismissBackupPrompt: () => void;
+  checkBackupNow: () => void;
   archiveRegistrationsByMonth: (year: number, month: number) => Promise<void>;
   getArchivedRegistrations: (options: {
     dateRange: {from: string, to: string},
     classNames?: string[],
     getAll?: boolean
   }) => Promise<{registrations: MealRegistration[]}>;
-  sendReminderForMissingClasses: (missingClasses: string[], date: string) => Promise<void>;
+  getRegisteredClasses: (date: string) => Promise<string[]>;
 }
 
 
@@ -161,6 +164,10 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   
   // Local state for announcement read status, acting as a client-side cache
   const [locallyReadIds, setLocallyReadIds] = useState<Set<string>>(new Set());
+  // Announcements are loaded in batches (newest first) to keep initial load light.
+  const ANNOUNCEMENTS_PAGE_SIZE = 20;
+  const announcementsLimitRef = useRef(ANNOUNCEMENTS_PAGE_SIZE);
+  const [announcementsTotal, setAnnouncementsTotal] = useState(0);
 
   // Load read statuses from localStorage when user logs in
   useEffect(() => {
@@ -213,6 +220,8 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // ---- Client-side permission guards (server enforces the real rules via RLS) ----
   const isAdmin = currentUser?.role === Role.Admin;
   const isBGH = currentUser?.role === Role.BGH;
+  // Only Admin/BGH load the full user list (RLS restricts profiles reads accordingly).
+  const canReadUsers = isAdmin || isBGH;
 
   const canWriteRegistrations = (className?: string): boolean => {
     if (!currentUser) return false;
@@ -296,39 +305,74 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   }, []);
 
+  const refetchClasses = useCallback(async (): Promise<void> => {
+    const { data } = await supabase.from('classes').select('*');
+    const rows = (data || []).map(mapClassRow);
+    if (rows.length === 0) {
+        try { await seedDefaultClasses(); } catch (e) { console.error(e); }
+    }
+    setClasses(sortClasses(rows));
+  }, [seedDefaultClasses]);
+
+  const refetchUsers = useCallback(async (): Promise<void> => {
+    if (!canReadUsers) { setUsers([]); return; }
+    const { data } = await supabase.from('profiles').select('*');
+    setUsers((data || []).map(mapUserRow));
+  }, [canReadUsers]);
+
+  const refetchAnnouncements = useCallback(async (): Promise<void> => {
+    const limit = announcementsLimitRef.current;
+    const { data, count } = await supabase
+        .from('announcements')
+        .select('*', { count: 'exact' })
+        .order('created_at', { ascending: false })
+        .limit(limit);
+    setAnnouncements((data || []).map(mapAnnouncementRow));
+    setAnnouncementsTotal(count || 0);
+  }, []);
+
+  const loadMoreAnnouncements = useCallback(() => {
+    announcementsLimitRef.current += ANNOUNCEMENTS_PAGE_SIZE;
+    refetchAnnouncements();
+  }, [refetchAnnouncements]);
+
+  const hasMoreAnnouncements = announcementsTotal > announcements.length;
+
+  const debounced = (fn: () => Promise<void>) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    return () => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => { timer = undefined; fn(); }, 400);
+    };
+  };
+
   // Realtime subscriptions for classes, users, announcements
   useEffect(() => {
     if (!currentUser) {
         setClasses([]);
         setUsers([]);
         setAnnouncements([]);
+        setAnnouncementsTotal(0);
         return;
     }
     setIsLoading(true);
 
     const channels: RealtimeChannel[] = [];
 
-    const subscribeClasses = () => {
-        const channel = supabase
-            .channel('classes-channel')
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'classes' }, async () => {
-                const { data } = await supabase.from('classes').select('*');
-                const rows = (data || []).map(mapClassRow);
-                if (rows.length === 0) {
-                    try { await seedDefaultClasses(); } catch (e) { console.error(e); }
-                }
-                setClasses(sortClasses(rows));
-            })
-            .subscribe();
-        channels.push(channel);
-    };
-
     const fetchAll = async () => {
         try {
-            const [{ data: classRows }, { data: userRows }, { data: annRows }] = await Promise.all([
-                supabase.from('classes').select('*'),
-                supabase.from('profiles').select('*'),
-                supabase.from('announcements').select('*').order('created_at', { ascending: false }),
+            const classQuery = supabase.from('classes').select('*');
+            const userQuery = canReadUsers
+                ? supabase.from('profiles').select('*')
+                : Promise.resolve({ data: null });
+            const annQuery = supabase
+                .from('announcements')
+                .select('*', { count: 'exact' })
+                .order('created_at', { ascending: false })
+                .limit(ANNOUNCEMENTS_PAGE_SIZE);
+
+            const [{ data: classRows }, { data: userRows }, { data: annRows, count }] = await Promise.all([
+                classQuery, userQuery, annQuery,
             ]);
 
             let classList = (classRows || []).map(mapClassRow);
@@ -340,6 +384,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             setClasses(sortClasses(classList));
             setUsers((userRows || []).map(mapUserRow));
             setAnnouncements((annRows || []).map(mapAnnouncementRow));
+            setAnnouncementsTotal(count || 0);
         } catch (error) {
             console.error("Error fetching initial data:", error);
             addToast("Không thể tải dữ liệu.", "error");
@@ -349,30 +394,35 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     };
 
     fetchAll();
-    subscribeClasses();
 
-    const userChannel = supabase
-        .channel('users-channel')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, async () => {
-            const { data } = await supabase.from('profiles').select('*');
-            setUsers((data || []).map(mapUserRow));
-        })
+    const onClassesChange = debounced(refetchClasses);
+    const onUsersChange = debounced(refetchUsers);
+    const onAnnouncementsChange = debounced(refetchAnnouncements);
+
+    const classChannel = supabase
+        .channel('classes-channel')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'classes' }, () => { onClassesChange(); })
         .subscribe();
-    channels.push(userChannel);
+    channels.push(classChannel);
+
+    if (canReadUsers) {
+        const userChannel = supabase
+            .channel('users-channel')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, () => { onUsersChange(); })
+            .subscribe();
+        channels.push(userChannel);
+    }
 
     const announcementChannel = supabase
         .channel('announcements-channel')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'announcements' }, async () => {
-            const { data } = await supabase.from('announcements').select('*').order('created_at', { ascending: false });
-            setAnnouncements((data || []).map(mapAnnouncementRow));
-        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'announcements' }, () => { onAnnouncementsChange(); })
         .subscribe();
     channels.push(announcementChannel);
 
     return () => {
         channels.forEach(ch => supabase.removeChannel(ch));
     };
-  }, [currentUser, addToast, setIsLoading, seedDefaultClasses]);
+  }, [currentUser, addToast, setIsLoading, seedDefaultClasses, canReadUsers, refetchClasses, refetchUsers, refetchAnnouncements]);
 
   const addRegistrations = useCallback(async (newRegistrations: Omit<MealRegistration, 'id' | 'updatedAt'>[]) => {
     if (!currentUser) {
@@ -383,7 +433,6 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         addToast("Bạn chỉ được đăng ký suất ăn cho lớp được phân công.", "error");
         return;
     }
-    setIsLoading(true);
     try {
       const userInfo = {
           registered_by_id: currentUser.id,
@@ -419,10 +468,8 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } catch (error) {
       console.error("Failed to save registrations", error);
       addToast("Lỗi khi lưu đăng ký.", "error");
-    } finally {
-      setIsLoading(false);
     }
-  }, [addToast, currentUser, logAction, markRecentlyUpdated, setIsLoading]);
+  }, [addToast, currentUser, logAction, markRecentlyUpdated, triggerRefetch]);
 
   const updateRegistrations = useCallback(async (updates: Omit<MealRegistration, 'id' | 'updatedAt'>[], originals: MealRegistration[]) => {
     if (!currentUser) {
@@ -433,7 +480,6 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         addToast("Bạn chỉ được chỉnh sửa suất ăn cho lớp được phân công.", "error");
         return;
     }
-    setIsLoading(true);
     try {
         const changes: any[] = [];
 
@@ -509,18 +555,15 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         markRecentlyUpdated(keysToHighlight);
         triggerRefetch();
     } catch (error: any) {
-        setIsLoading(false);
         if (error?.message === 'STALE_DATA') {
-            addToast('Dữ liệu đã bị thay đổi bởi người khác. Vui lòng tải lại.', 'error');
+            addToast('Dữ liệu đã bị thay đổi bởi người khác. Thông tin bạn đang chỉnh sửa vẫn được giữ lại — hãy bấm Lưu lại.', 'error');
             throw error;
         } else {
             console.error("Failed to update registrations", error);
             addToast("Lỗi khi cập nhật đăng ký.", "error");
         }
-    } finally {
-        setIsLoading(false);
     }
-  }, [addToast, currentUser, logAction, markRecentlyUpdated, setIsLoading]);
+  }, [addToast, currentUser, logAction, markRecentlyUpdated, triggerRefetch, canWriteRegistrations]);
 
   const getRegistrations = useCallback(async (options: {
     dates?: string[],
@@ -537,11 +580,20 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   }> => {
     const { dates, classNames, dateRange, limit: queryLimit, offset = 0, getAll = false, skipCount = false } = options;
 
+    let effectiveClassNames = classNames;
+    if (currentUser?.role === Role.GV) {
+        // Teachers only ever see (and can write) their own class.
+        effectiveClassNames = currentUser.assignedClass ? [currentUser.assignedClass] : [];
+        if (effectiveClassNames.length === 0) {
+            return { registrations: [], totalCount: 0, hasMore: false };
+        }
+    }
+
     let query = supabase.from('registrations').select('*', { count: 'exact' });
 
     if (dateRange && dateRange.from) query = query.gte('date', dateRange.from);
     if (dateRange && dateRange.to) query = query.lte('date', dateRange.to);
-    if (classNames && classNames.length > 0) query = query.in('class_name', classNames);
+    if (effectiveClassNames && effectiveClassNames.length > 0) query = query.in('class_name', effectiveClassNames);
     if (dates && dates.length > 0) query = query.in('date', dates);
 
     query = query.order('date', { ascending: false });
@@ -562,12 +614,25 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const hasMore = !getAll && queryLimit ? offset + registrations.length < (count || 0) : false;
 
     return { registrations, totalCount, hasMore };
+  }, [currentUser]);
+
+  const getRegisteredClasses = useCallback(async (date: string): Promise<string[]> => {
+    try {
+      const { data, error } = await supabase.rpc('get_registered_classes', { p_date: date });
+      if (error) {
+        console.error("getRegisteredClasses error:", error);
+        return [];
+      }
+      return (data || []).map((row: any) => row.class_name);
+    } catch (error) {
+      console.error("getRegisteredClasses exception:", error);
+      return [];
+    }
   }, []);
   
   const exportData = useCallback(async (options: { format: 'csv' | 'pdf', dateRange: { from: string, to: string }, classNames: string[] }) => {
         const { format, dateRange, classNames } = options;
         addToast('Đang chuẩn bị file... Quá trình này có thể mất vài giây.', 'success');
-        setIsLoading(true);
 
         interface ExportableRow {
             date: string;
@@ -665,10 +730,8 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         } catch(e) {
             console.error("Export failed", e);
             addToast("Xuất file thất bại. Vui lòng thử lại.", 'error');
-        } finally {
-            setIsLoading(false);
         }
-  }, [getRegistrations, addToast, setIsLoading]);
+  }, [getRegistrations, addToast]);
 
   const requestEdit = useCallback((className: string, date: string) => {
     setEditingInfo({ className, date });
@@ -683,7 +746,6 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         addToast("Bạn không có quyền xóa đăng ký này.", "error");
         return;
     }
-    setIsLoading(true);
     try {
         const { error } = await supabase.from('registrations')
             .delete()
@@ -696,10 +758,8 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } catch (error) {
         console.error("Failed to delete registrations", error);
         addToast("Lỗi khi xóa đăng ký.", "error");
-    } finally {
-        setIsLoading(false);
     }
-  }, [addToast, logAction, setIsLoading]);
+  }, [addToast, logAction, canWriteRegistrations, triggerRefetch]);
 
   const deleteMultipleRegistrationsByDate = useCallback(async (items: {className: string, date: string}[]) => {
     if (items.length === 0) return;
@@ -707,7 +767,6 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         addToast("Bạn không có quyền xóa đăng ký của các lớp này.", "error");
         return;
     }
-    setIsLoading(true);
     try {
         for (const item of items) {
             await supabase.from('registrations')
@@ -721,10 +780,8 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } catch (error) {
         console.error("Failed to delete multiple registrations", error);
         addToast(`Lỗi khi xóa hàng loạt.`, 'error');
-    } finally {
-        setIsLoading(false);
     }
-  }, [addToast, logAction, setIsLoading]);
+  }, [addToast, logAction, canWriteRegistrations, triggerRefetch]);
 
   const addClass = useCallback(async (newClassData: Omit<ClassInfo, 'id' | 'updatedAt'>): Promise<boolean> => {
     if (!canWriteClass()) { addToast("Bạn không có quyền thêm lớp.", "error"); return false; }
@@ -733,7 +790,6 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         addToast(`Lớp "${trimmedName}" đã tồn tại hoặc tên lớp không hợp lệ.`, 'error');
         return false;
     }
-    setIsLoading(true);
     try {
         const { error } = await supabase.from('classes').insert({ name: trimmedName, student_count: newClassData.studentCount });
         if (error) throw error;
@@ -744,10 +800,8 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         console.error("Failed to add class", error);
         addToast("Lỗi khi thêm lớp.", "error");
         return false;
-    } finally {
-        setIsLoading(false);
     }
-  }, [classes, addToast, logAction, setIsLoading]);
+  }, [classes, addToast, logAction, triggerRefetch]);
 
   const updateClass = useCallback(async (classId: string, updatedData: Omit<ClassInfo, 'id' | 'updatedAt'>): Promise<boolean> => {
      if (!canWriteClass()) { addToast("Bạn không có quyền chỉnh sửa lớp.", "error"); return false; }
@@ -757,7 +811,6 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         addToast(`Tên lớp "${trimmedName}" đã tồn tại hoặc không hợp lệ.`, 'error');
         return false;
     }
-    setIsLoading(true);
     try {
         await supabase.from('classes').update({ name: trimmedName, student_count: updatedData.studentCount }).eq('id', classId);
 
@@ -772,14 +825,11 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         console.error("Failed to update class", error);
         addToast("Lỗi khi cập nhật lớp.", "error");
         return false;
-    } finally {
-        setIsLoading(false);
     }
-  }, [classes, addToast, logAction, setIsLoading]);
+  }, [classes, addToast, logAction, canWriteClass, triggerRefetch]);
 
   const deleteClass = useCallback(async (classToDelete: ClassInfo) => {
     if (!canWriteClass()) { addToast("Bạn không có quyền xóa lớp.", "error"); return; }
-    setIsLoading(true);
     try {
         await supabase.from('registrations').delete().eq('class_name', classToDelete.name);
         await supabase.from('classes').delete().eq('id', classToDelete.id);
@@ -790,17 +840,14 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         console.error("Failed to delete class", error);
         addToast("Lỗi khi xóa lớp.", "error");
         throw error;
-    } finally {
-        setIsLoading(false);
     }
-  }, [addToast, logAction, setIsLoading]);
+  }, [addToast, logAction, canWriteClass, triggerRefetch]);
 
     const updateUser = useCallback(async (userId: string, updatedData: Partial<Omit<User, 'id'>>): Promise<boolean> => {
         if (!canWriteUser()) { addToast("Bạn không có quyền chỉnh sửa người dùng.", "error"); return false; }
         if (updatedData.email && users.some(u => u.email.toLowerCase() === updatedData.email!.toLowerCase() && u.id !== userId)) {
             addToast(`Email "${updatedData.email}" đã tồn tại.`, 'error'); return false;
         }
-        setIsLoading(true);
         try {
             const payload: Record<string, any> = {};
             if (updatedData.displayName !== undefined) payload.display_name = updatedData.displayName;
@@ -814,17 +861,25 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             return true;
         } catch (error) {
             console.error("Failed to update user", error); addToast("Lỗi khi cập nhật người dùng.", "error"); return false;
-        } finally { setIsLoading(false); }
-    }, [users, addToast, logAction, setIsLoading]);
+        }
+    }, [users, addToast, logAction, canWriteUser, triggerRefetch]);
+
+    const isMissingRpc = (error: any): boolean => {
+        const msg = String(error?.message || '').toLowerCase();
+        return msg.includes('pgrst202') || msg.includes('does not exist') || msg.includes('could not find the function');
+    };
 
     const deleteUser = useCallback(async (userId: string) => {
         if (!canWriteUser()) { addToast("Bạn không có quyền xóa người dùng.", "error"); return; }
-        setIsLoading(true);
         const userToDelete = users.find(u => u.id === userId);
         try {
-            // Attempt full removal via RPC; fall back to removing just the profile.
+            // Attempt full removal via RPC; only if the RPC is not deployed yet
+            // do we fall back to removing just the profile.
             const { error } = await supabase.rpc('delete_user', { p_user_id: userId });
             if (error) {
+                if (!isMissingRpc(error)) {
+                    throw error;
+                }
                 await supabase.from('profiles').delete().eq('id', userId);
             }
             await logAction('DELETE_USER', { userId, email: userToDelete?.email });
@@ -832,12 +887,11 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             triggerRefetch();
         } catch (error) {
             console.error("Failed to delete user", error); addToast("Lỗi khi xóa người dùng.", "error");
-        } finally { setIsLoading(false); }
-    }, [addToast, logAction, users, setIsLoading]);
+        } 
+    }, [users, addToast, logAction, canWriteUser, triggerRefetch]);
 
     const approveUser = useCallback(async (userId: string, role: Role, assignedClass: string): Promise<boolean> => {
         if (!canWriteUser()) { addToast("Bạn không có quyền duyệt tài khoản.", "error"); return false; }
-        setIsLoading(true);
         const user = users.find(u => u.id === userId);
         try {
             const payload: Record<string, any> = {
@@ -854,16 +908,18 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             console.error("Failed to approve user", error);
             addToast("Lỗi khi duyệt tài khoản.", "error");
             return false;
-        } finally { setIsLoading(false); }
-    }, [addToast, logAction, users, setIsLoading]);
+        }
+    }, [addToast, logAction, users, canWriteUser, triggerRefetch]);
 
     const rejectUser = useCallback(async (userId: string): Promise<boolean> => {
         if (!canWriteUser()) { addToast("Bạn không có quyền từ chối tài khoản.", "error"); return false; }
-        setIsLoading(true);
         const user = users.find(u => u.id === userId);
         try {
             const { error } = await supabase.rpc('delete_user', { p_user_id: userId });
             if (error) {
+                if (!isMissingRpc(error)) {
+                    throw error;
+                }
                 await supabase.from('profiles').delete().eq('id', userId);
             }
             await logAction('DELETE_USER', { userId, email: user?.email, reason: 'REJECTED' });
@@ -874,8 +930,8 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             console.error("Failed to reject user", error);
             addToast("Lỗi khi từ chối tài khoản.", "error");
             return false;
-        } finally { setIsLoading(false); }
-    }, [addToast, logAction, users, setIsLoading]);
+        }
+    }, [addToast, logAction, users, canWriteUser, triggerRefetch]);
     
     const refreshUsers = useCallback(async () => {
         try {
@@ -889,7 +945,6 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const addAnnouncement = useCallback(async (data: Omit<Announcement, 'id' | 'createdAt' | 'createdBy' | 'createdById' | 'readBy'>) => {
         if (!canWriteAnnouncement()) { addToast("Bạn không có quyền đăng thông báo.", "error"); return false; }
         if (!currentUser) return false;
-        setIsLoading(true);
         try {
             const { error } = await supabase.from('announcements').insert({
                 title: data.title,
@@ -904,12 +959,11 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             return true;
         } catch (error) {
             console.error("Failed to add announcement:", error); addToast('Lỗi khi đăng thông báo.', 'error'); return false;
-        } finally { setIsLoading(false); }
-    }, [currentUser, addToast, logAction, setIsLoading]);
+        }
+    }, [currentUser, addToast, logAction, canWriteAnnouncement, triggerRefetch]);
 
     const updateAnnouncement = useCallback(async (id: string, data: Partial<Omit<Announcement, 'id'>>) => {
         if (!canWriteAnnouncement()) { addToast("Bạn không có quyền sửa thông báo.", "error"); return false; }
-        setIsLoading(true);
         try {
             const payload: Record<string, any> = {};
             if (data.title !== undefined) payload.title = data.title;
@@ -920,20 +974,19 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             return true;
         } catch(error) {
             console.error("Failed to update announcement:", error); addToast('Lỗi khi cập nhật.', 'error'); return false;
-        } finally { setIsLoading(false); }
-    }, [addToast, logAction, setIsLoading]);
+        }
+    }, [addToast, logAction, canWriteAnnouncement, triggerRefetch]);
 
     const deleteAnnouncement = useCallback(async (id: string) => {
         if (!canWriteAnnouncement()) { addToast("Bạn không có quyền xóa thông báo.", "error"); return; }
-        setIsLoading(true);
         try {
             await supabase.from('announcements').delete().eq('id', id);
             await logAction('DELETE_ANNOUNCEMENT', { announcementId: id });
             addToast('Đã xóa thông báo.', 'success');
         } catch (error) {
             console.error("Failed to delete announcement:", error); addToast('Lỗi khi xóa.', 'error');
-        } finally { setIsLoading(false); }
-    }, [addToast, logAction, setIsLoading]);
+        }
+    }, [addToast, logAction, canWriteAnnouncement, triggerRefetch]);
 
     const markAnnouncementsAsRead = useCallback(async (announcementIds: string[]) => {
         if (!currentUser || announcementIds.length === 0) return;
@@ -985,75 +1038,17 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const deleteAuditLogs = useCallback(async (logIds: string[]) => {
         if (logIds.length === 0) return;
         if (!canWriteUser()) { addToast("Bạn không có quyền xóa lịch sử.", "error"); return; }
-        setIsLoading(true);
         try {
             await supabase.from('audit_logs').delete().in('id', logIds);
             addToast(`Đã xóa ${logIds.length} mục lịch sử.`, 'success');
         } catch (error) {
             console.error("Failed to delete audit logs", error);
             addToast("Lỗi khi xóa lịch sử.", "error");
-        } finally {
-            setIsLoading(false);
         }
-    }, [addToast, setIsLoading]);
-    
-    const sendReminderForMissingClasses = useCallback(async (missingClasses: string[], date: string) => {
-        if (!currentUser || (currentUser.role !== Role.Admin && currentUser.role !== Role.BGH)) {
-            addToast("Bạn không có quyền thực hiện hành động này.", "error");
-            return;
-        }
-        setIsLoading(true);
-        try {
-            // Real reminder: persist a record and dispatch emails via the
-            // send-reminder-email Edge Function (deployable) when configured.
-            const teacherRows = await supabase
-                .from('profiles')
-                .select('email')
-                .eq('role', Role.GV)
-                .in('assigned_class', missingClasses);
-            const recipientEmails = Array.from(new Set(
-                (teacherRows.data || []).map(r => r.email).filter(Boolean)
-            ));
-
-            const { error: insertError } = await supabase.from('reminders').insert({
-                reminder_date: date,
-                class_names: missingClasses,
-                recipient_emails: recipientEmails,
-                sent_by: currentUser.id,
-                sent_by_name: currentUser.displayName,
-                status: 'recorded',
-            });
-            if (insertError) throw insertError;
-
-            let emailsSent = 0;
-            try {
-                const { data, error } = await supabase.functions.invoke('send-reminder-email', {
-                    body: { date, classNames: missingClasses, recipientEmails },
-                });
-                if (error) {
-                    console.warn("Edge function not available:", error);
-                } else if (data?.emailsSent != null) {
-                    emailsSent = data.emailsSent;
-                }
-            } catch (e) {
-                console.warn("Edge function invoke failed (email dispatch disabled):", e);
-            }
-
-            addToast(
-                `Đã gửi nhắc nhở đến ${missingClasses.length} lớp${emailsSent > 0 ? ` (${emailsSent} email)` : ' (email chưa được cấu hình — đã ghi nhận trong hệ thống)'}.`,
-                'success'
-            );
-        } catch (error) {
-            console.error("Failed to send reminders", error);
-            addToast("Lỗi khi gửi nhắc nhở.", "error");
-        } finally {
-            setIsLoading(false);
-        }
-    }, [currentUser, addToast, setIsLoading]);
+    }, [addToast, canWriteUser, triggerRefetch]);
 
     const archiveRegistrationsByMonth = useCallback(async (year: number, month: number) => {
         if (!canArchive()) { addToast("Bạn không có quyền lưu trữ dữ liệu.", "error"); return; }
-        setIsLoading(true);
         try {
             const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
             const endDate = new Date(year, month, 0);
@@ -1068,7 +1063,6 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
             if ((count || 0) === 0) {
                 addToast(`Không có dữ liệu nào trong tháng ${month}/${year} để lưu trữ.`, 'success');
-                setIsLoading(false);
                 return;
             }
 
@@ -1081,10 +1075,8 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         } catch (error) {
             console.error("Failed to archive data", error);
             addToast("Lỗi khi lưu trữ dữ liệu.", "error");
-        } finally {
-            setIsLoading(false);
         }
-    }, [addToast, logAction, setIsLoading]);
+    }, [addToast, logAction, canArchive, triggerRefetch]);
 
     const getArchivedRegistrations = useCallback(async (options: {
         dateRange: { from: string, to: string },
@@ -1092,10 +1084,15 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         getAll?: boolean
     }): Promise<{registrations: MealRegistration[]}> => {
         const { dateRange, classNames } = options;
+        let adjustedClassNames = classNames;
+        if (currentUser?.role === Role.GV) {
+            adjustedClassNames = currentUser.assignedClass ? [currentUser.assignedClass] : [];
+            if (adjustedClassNames.length === 0) return { registrations: [] };
+        }
         let query = supabase.from('archived_registrations').select('*');
         if (dateRange && dateRange.from) query = query.gte('date', dateRange.from);
         if (dateRange && dateRange.to) query = query.lte('date', dateRange.to);
-        if (classNames && classNames.length > 0) query = query.in('class_name', classNames);
+        if (adjustedClassNames && adjustedClassNames.length > 0) query = query.in('class_name', adjustedClassNames);
 
         const { data, error } = await query;
         if (error) {
@@ -1104,12 +1101,12 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         }
         const registrations = (data || []).map(mapRegistrationRow);
         return { registrations };
-    }, []);
+    }, [currentUser]);
     
   const value = useMemo(() => ({
-    editingInfo, classes, users, announcements, unreadAnnouncementsCount, dataVersion, recentlyUpdatedKeys, showBackupPrompt, isAnnouncementRead,
-    addRegistrations, updateRegistrations, requestEdit, clearEditing, deleteRegistrations, deleteMultipleRegistrationsByDate, addClass, updateClass, deleteClass, getRegistrations, updateUser, deleteUser, approveUser, rejectUser, refreshUsers, addAnnouncement, updateAnnouncement, deleteAnnouncement, markAnnouncementsAsRead, getAuditLogs, deleteAuditLogs, exportData, dismissBackupPrompt, archiveRegistrationsByMonth, getArchivedRegistrations, sendReminderForMissingClasses
-  }), [editingInfo, classes, users, announcements, unreadAnnouncementsCount, dataVersion, recentlyUpdatedKeys, showBackupPrompt, isAnnouncementRead, addRegistrations, updateRegistrations, requestEdit, clearEditing, deleteRegistrations, deleteMultipleRegistrationsByDate, addClass, updateClass, deleteClass, getRegistrations, updateUser, deleteUser, approveUser, rejectUser, refreshUsers, addAnnouncement, updateAnnouncement, deleteAnnouncement, markAnnouncementsAsRead, getAuditLogs, deleteAuditLogs, exportData, dismissBackupPrompt, archiveRegistrationsByMonth, getArchivedRegistrations, sendReminderForMissingClasses]);
+    editingInfo, classes, users, announcements, unreadAnnouncementsCount, hasMoreAnnouncements, loadMoreAnnouncements, dataVersion, recentlyUpdatedKeys, showBackupPrompt, isAnnouncementRead,
+    addRegistrations, updateRegistrations, requestEdit, clearEditing, deleteRegistrations, deleteMultipleRegistrationsByDate, addClass, updateClass, deleteClass, getRegistrations, updateUser, deleteUser, approveUser, rejectUser, refreshUsers, addAnnouncement, updateAnnouncement, deleteAnnouncement, markAnnouncementsAsRead, getAuditLogs, deleteAuditLogs, exportData, dismissBackupPrompt, checkBackupNow: checkForBackupPrompt, archiveRegistrationsByMonth, getArchivedRegistrations, getRegisteredClasses
+  }), [editingInfo, classes, users, announcements, unreadAnnouncementsCount, hasMoreAnnouncements, loadMoreAnnouncements, dataVersion, recentlyUpdatedKeys, showBackupPrompt, isAnnouncementRead, addRegistrations, updateRegistrations, requestEdit, clearEditing, deleteRegistrations, deleteMultipleRegistrationsByDate, addClass, updateClass, deleteClass, getRegistrations, updateUser, deleteUser, approveUser, rejectUser, refreshUsers, addAnnouncement, updateAnnouncement, deleteAnnouncement, markAnnouncementsAsRead, getAuditLogs, deleteAuditLogs, exportData, dismissBackupPrompt, checkForBackupPrompt, archiveRegistrationsByMonth, getArchivedRegistrations, getRegisteredClasses]);
 
   return (
     <DataContext.Provider value={value}>

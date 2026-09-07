@@ -1,4 +1,4 @@
-import React, { createContext, useState, useCallback, useContext, ReactNode, useMemo } from 'react';
+import React, { createContext, useState, useCallback, useContext, ReactNode, useMemo, useRef } from 'react';
 import { Toast, Notification } from '../types';
 
 interface UIContextType {
@@ -17,9 +17,10 @@ export const UIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [activeRequests, setActiveRequests] = useState(0);
   const isLoading = activeRequests > 0;
+  const nextId = useRef(0);
 
   const addToast = useCallback((message: string, type: 'success' | 'error') => {
-    const id = Date.now();
+    const id = ++nextId.current;
     setToasts(prevToasts => [...prevToasts, { id, message, type }]);
     setTimeout(() => {
       setToasts(prevToasts => prevToasts.filter(toast => toast.id !== id));
@@ -27,7 +28,7 @@ export const UIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   }, []);
 
   const addNotification = useCallback((message: string) => {
-    const id = Date.now();
+    const id = ++nextId.current;
     setNotifications(prev => [...prev, { id, message }]);
     setTimeout(() => {
         setNotifications(prev => prev.filter(n => n.id !== id));

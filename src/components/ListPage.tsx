@@ -241,7 +241,7 @@ const ListPage: React.FC<{ setView: (view: View) => void }> = ({ setView }) => {
                                     <ListTableRow 
                                         key={item.className} 
                                         data={item} 
-                                        isHighlighted={recentlyUpdatedKeys.has(`${currentDay}-${item.className}`)}
+                                        isHighlighted={recentlyUpdatedKeys.has(`${currentDay}-${item.className}`) || (nextRegisteredDay ? recentlyUpdatedKeys.has(`${nextRegisteredDay}-${item.className}`) : false)}
                                         stt={stt}
                                         isUserClassHighlight={isUserClassHighlight}
                                     />

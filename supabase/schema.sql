@@ -91,17 +91,6 @@ create table if not exists public.archived_registrations (
   updated_at timestamptz
 );
 
-create table if not exists public.reminders (
-  id uuid primary key default gen_random_uuid(),
-  created_at timestamptz not null default now(),
-  reminder_date date not null,
-  class_names text[] not null default '{}',
-  recipient_emails text[] not null default '{}',
-  sent_by uuid,
-  sent_by_name text,
-  status text not null default 'recorded'
-);
-
 -- ============================================
 -- Auth / Role helper functions (security definer to avoid RLS recursion)
 -- ============================================
@@ -231,23 +220,29 @@ alter table public.registrations enable row level security;
 alter table public.announcements enable row level security;
 alter table public.audit_logs enable row level security;
 alter table public.archived_registrations enable row level security;
-alter table public.reminders enable row level security;
 
--- Authenticated users can read everything
+-- Read access is role-scoped so teachers only see data of their own class,
+-- while Admin / BGH / KT&CD see everything relevant to their screens.
 drop policy if exists "allow_read_classes" on public.classes;
 create policy "allow_read_classes" on public.classes for select using (auth.role() = 'authenticated');
 drop policy if exists "allow_read_profiles" on public.profiles;
-create policy "allow_read_profiles" on public.profiles for select using (auth.role() = 'authenticated');
+create policy "allow_read_profiles" on public.profiles for select using (public.is_admin() or public.is_bgh());
+drop policy if exists "allow_read_own_profile" on public.profiles;
+create policy "allow_read_own_profile" on public.profiles for select using (auth.uid() = id);
 drop policy if exists "allow_read_registrations" on public.registrations;
-create policy "allow_read_registrations" on public.registrations for select using (auth.role() = 'authenticated');
+create policy "allow_read_registrations" on public.registrations for select using (
+  public.is_admin() or public.is_bgh() or public.is_kt_cd()
+  or (
+    public.current_user_role() = 'Giáo viên'
+    and public.current_user_assigned_class() = class_name
+  )
+);
 drop policy if exists "allow_read_announcements" on public.announcements;
 create policy "allow_read_announcements" on public.announcements for select using (auth.role() = 'authenticated');
 drop policy if exists "allow_read_audit_logs" on public.audit_logs;
-create policy "allow_read_audit_logs" on public.audit_logs for select using (auth.role() = 'authenticated');
+create policy "allow_read_audit_logs" on public.audit_logs for select using (public.is_admin());
 drop policy if exists "allow_read_archived" on public.archived_registrations;
-create policy "allow_read_archived" on public.archived_registrations for select using (auth.role() = 'authenticated');
-drop policy if exists "allow_read_reminders" on public.reminders;
-create policy "allow_read_reminders" on public.reminders for select using (auth.role() = 'authenticated');
+create policy "allow_read_archived" on public.archived_registrations for select using (public.is_admin());
 
 -- Writes: enforced by role (business rules live in the application AND here).
 
@@ -312,11 +307,12 @@ drop policy if exists "admin_write_archived" on public.archived_registrations;
 create policy "admin_write_archived" on public.archived_registrations
   for all using (public.is_admin()) with check (public.is_admin());
 
--- ---- reminders: any authenticated user may record a reminder (business rules gate the UI) ----
-drop policy if exists "allow_write_reminders" on public.reminders;
-drop policy if exists "authenticated_insert_reminders" on public.reminders;
-create policy "authenticated_insert_reminders" on public.reminders
-  for insert with check (auth.role() = 'authenticated');
+-- ============================================
+-- Performance indexes (matters as the user base grows)
+-- ============================================
+create index if not exists idx_registrations_date_class on public.registrations (date desc, class_name);
+create index if not exists idx_audit_logs_timestamp on public.audit_logs (timestamp desc);
+create index if not exists idx_announcements_created_at on public.announcements (created_at desc);
 
 -- ============================================
 -- Realtime (idempotent: skip tables already in the publication)
@@ -378,3 +374,25 @@ begin
   delete from auth.users where id = p_user_id;
 end;
 $$;
+
+-- ============================================
+-- RPC: Classes already registered for a date (any authenticated user)
+-- Returns only class names, so teachers can see the summary count
+-- without being able to read other classes' meal counts.
+-- ============================================
+create or replace function public.get_registered_classes(p_date date)
+returns table(class_name text)
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select r.class_name
+  from public.registrations r
+  where r.date = p_date
+    and r.count > 0
+    and r.meal_type in ('Bữa trưa (trẻ)', 'Bữa trưa (GV)')
+  group by r.class_name;
+$$;
+
+grant execute on function public.get_registered_classes(date) to authenticated;

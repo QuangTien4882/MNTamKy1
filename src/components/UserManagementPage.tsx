@@ -21,13 +21,14 @@ const getRoleBadgeClass = (role: Role) => {
 };
 
 const UserManagementPage: React.FC = () => {
-    const { classes, users, updateUser, deleteUser } = useData();
+    const { classes, users, approveUser, rejectUser, updateUser, deleteUser } = useData();
     const { isLoading } = useUI();
 
     const [searchTerm, setSearchTerm] = useState('');
     const [debouncedSearchTerm, setDebouncedSearchTerm] = useState(searchTerm);
     const [editingUser, setEditingUser] = useState<User | null>(null);
     const [deletingUser, setDeletingUser] = useState<User | null>(null);
+    const [confirmReject, setConfirmReject] = useState<User | null>(null);
 
     const modalRef = useRef<HTMLDivElement>(null);
     const triggerRef = useRef<HTMLElement | null>(null);
@@ -44,7 +45,7 @@ const UserManagementPage: React.FC = () => {
     
     // Accessibility: Focus trap for modals
     useEffect(() => {
-        const isModalOpen = !!editingUser || !!deletingUser;
+        const isModalOpen = !!editingUser || !!deletingUser || !!confirmReject;
         if (isModalOpen && modalRef.current) {
             triggerRef.current = document.activeElement as HTMLElement;
             // FIX: Replaced generic type argument on `querySelectorAll` with a type assertion to fix the "Untyped function calls may not accept type arguments" error.
@@ -77,7 +78,7 @@ const UserManagementPage: React.FC = () => {
                 triggerRef.current?.focus();
             };
         }
-    }, [editingUser, deletingUser]);
+    }, [editingUser, deletingUser, confirmReject]);
 
     const filteredUsers = useMemo(() =>
         users.filter(u =>
@@ -86,12 +87,17 @@ const UserManagementPage: React.FC = () => {
         ).sort((a,b) => a.displayName.localeCompare(b.displayName)),
         [users, debouncedSearchTerm]);
 
+    const pendingUsers = useMemo(() => users.filter(u => u.role === Role.Pending), [users]);
+
+    const handleApprove = async (user: User) => {
+        await approveUser(user.id, Role.GV, '');
+    };
+
     const handleUpdateUser = async () => {
         if (!editingUser) return;
         const { id, ...updatedData } = editingUser;
         let dataToUpdate: Partial<Omit<User, 'id'>> = {
             displayName: updatedData.displayName,
-            email: updatedData.email,
             role: updatedData.role,
             assignedClass: updatedData.role === Role.GV ? updatedData.assignedClass : ''
         };
@@ -133,6 +139,28 @@ const UserManagementPage: React.FC = () => {
                     </div>
                 </div>
             )}
+            {confirmReject && (
+                <div className="fixed inset-0 bg-black bg-opacity-60 flex justify-center items-center z-50">
+                    <div role="dialog" aria-modal="true" className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-sm m-4 modal-content">
+                        <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">Xác nhận từ chối</h3>
+                        <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">
+                            Bạn có chắc chắn muốn từ chối tài khoản <span className="font-semibold">{confirmReject.displayName}</span> ({confirmReject.email})? Tài khoản sẽ bị xóa vĩnh viễn.
+                        </p>
+                        <div className="mt-6 flex justify-end space-x-3">
+                            <button onClick={() => setConfirmReject(null)} className="px-4 py-2 text-sm font-medium rounded-md text-gray-700 bg-gray-100 hover:bg-gray-200 dark:bg-gray-600 dark:text-gray-200 dark:hover:bg-gray-500">Hủy</button>
+                            <button
+                                onClick={async () => {
+                                    await rejectUser(confirmReject.id);
+                                    setConfirmReject(null);
+                                }}
+                                className="px-4 py-2 text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700"
+                            >
+                                Từ chối
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
             {editingUser && (
                 <div className="fixed inset-0 bg-black bg-opacity-60 flex justify-center items-center z-50">
                     <div ref={modalRef} role="dialog" aria-modal="true" aria-labelledby="edit-user-title" className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-md m-4 modal-content">
@@ -144,7 +172,8 @@ const UserManagementPage: React.FC = () => {
                             </div>
                             <div>
                                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Email</label>
-                                <input type="email" value={editingUser.email} onChange={e => setEditingUser({...editingUser, email: e.target.value})} className="mt-1 block w-full px-3 py-2 bg-white dark:bg-gray-700 dark:text-white border border-gray-300 dark:border-gray-600 rounded-md" />
+                                <input type="email" value={editingUser.email} readOnly className="mt-1 block w-full px-3 py-2 bg-gray-100 dark:bg-gray-600 dark:text-gray-300 border border-gray-300 dark:border-gray-600 rounded-md cursor-not-allowed" />
+                                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Email không thể thay đổi sau khi tạo tài khoản.</p>
                             </div>
                             <div>
                                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Vai trò</label>
@@ -177,14 +206,22 @@ const UserManagementPage: React.FC = () => {
                 <div className="p-4 bg-teal-50 dark:bg-gray-800/50 border dark:border-teal-600/30 rounded-lg text-sm text-gray-700 dark:text-gray-300">
                     <p>
                         Người dùng <strong>tự đăng ký</strong> ngay trên trang đăng nhập (tab <strong>"Đăng ký"</strong>).
-                        Tài khoản mới có vai trò <strong>"Chưa duyệt"</strong> và bị chặn đăng nhập cho đến khi quản trị viên duyệt.
-                        Duyệt tài khoản, chọn vai trò và phân công lớp tại tab <strong>"Duyệt tài khoản"</strong>.
+                        Tài khoản mới có vai trò <strong>"Chưa duyệt"</strong> và bị chặn đăng nhập. Tại đây, bấm
+                        <strong> "Duyệt"</strong> để kích hoạt tài khoản. Chỉ <em>sau khi đã duyệt</em>, Admin mới được
+                        <strong> chỉnh vai trò</strong> và <strong>phân công lớp</strong> (nếu cần) qua nút <strong>"Sửa"</strong>.
                     </p>
-                    <p className="mt-2">Tại đây chỉ còn chức năng <strong>chỉnh sửa/đổi vai trò</strong> và <strong>xóa</strong> người dùng hiện có.</p>
+                    <p className="mt-2">Tài khoản <strong>chưa duyệt</strong> chỉ có thao tác <strong>Duyệt</strong> hoặc <strong>Từ chối</strong>.</p>
                 </div>
 
                 <div>
-                    <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100 mb-4">Danh sách người dùng ({users.length})</h3>
+                    <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100 mb-4 flex items-center gap-3">
+                        <span>Danh sách người dùng ({users.length})</span>
+                        {pendingUsers.length > 0 && (
+                            <span className="px-2 py-0.5 inline-flex text-xs font-semibold rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+                                {pendingUsers.length} chờ duyệt
+                            </span>
+                        )}
+                    </h3>
                     <div className="mb-4">
                         <input
                             type="text"
@@ -208,7 +245,7 @@ const UserManagementPage: React.FC = () => {
                                 </thead>
                                 <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
                                     {filteredUsers.map(user => (
-                                        <tr key={user.id}>
+                                        <tr key={user.id} className={user.role === Role.Pending ? 'bg-amber-50 dark:bg-amber-900/20' : undefined}>
                                             <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-800 dark:text-gray-100">{user.displayName}</td>
                                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-300">{user.email}</td>
                                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-300">
@@ -218,8 +255,17 @@ const UserManagementPage: React.FC = () => {
                                             </td>
                                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-300">{user.assignedClass || '—'}</td>
                                             <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-4">
-                                                <button onClick={() => setEditingUser(user)} className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-200">Sửa</button>
-                                                <button onClick={() => setDeletingUser(user)} className="text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-200">Xóa</button>
+                                                {user.role === Role.Pending ? (
+                                                    <>
+                                                        <button onClick={() => handleApprove(user)} disabled={isLoading} className="text-green-600 hover:text-green-800 dark:text-green-400 dark:hover:text-green-300 disabled:opacity-50">Duyệt</button>
+                                                        <button onClick={() => setConfirmReject(user)} disabled={isLoading} className="text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300 disabled:opacity-50">Từ chối</button>
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <button onClick={() => setEditingUser(user)} className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-200">Sửa</button>
+                                                        <button onClick={() => setDeletingUser(user)} className="text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-200">Xóa</button>
+                                                    </>
+                                                )}
                                             </td>
                                         </tr>
                                     ))}

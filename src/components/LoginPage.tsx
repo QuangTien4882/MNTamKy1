@@ -1,6 +1,16 @@
 import React, { useState, FormEvent } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 
+const EMAIL_STORAGE_KEY = 'remembered_login_email';
+
+const rememberEmail = (value: string) => {
+    try {
+        localStorage.setItem(EMAIL_STORAGE_KEY, value);
+    } catch (e) {
+        // ignore storage errors
+    }
+};
+
 const LoadingSpinner: React.FC = () => (
     <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
@@ -39,7 +49,13 @@ const LoginPage: React.FC = () => {
     const [mode, setMode] = useState<'login' | 'register'>('login');
 
     // Login fields
-    const [email, setEmail] = useState('');
+    const [email, setEmail] = useState(() => {
+        try {
+            return localStorage.getItem(EMAIL_STORAGE_KEY) || '';
+        } catch (e) {
+            return '';
+        }
+    });
     const [password, setPassword] = useState('');
 
     // Register fields
@@ -66,6 +82,7 @@ const LoginPage: React.FC = () => {
             await signInWithEmail(email, password);
         } catch (err: any) {
             setError(err?.message ? getFriendlyAuthError(err.message) : 'Đã xảy ra lỗi khi đăng nhập.');
+        } finally {
             setIsLoading(false);
         }
     };
@@ -85,6 +102,8 @@ const LoginPage: React.FC = () => {
         setIsLoading(true);
         try {
             await signUp(regEmail, regPassword, regDisplayName);
+            rememberEmail(regEmail);
+            setEmail(regEmail);
             setRegSuccess('Đăng ký thành công. Tài khoản của bạn đang chờ Admin duyệt. Vui lòng quay lại sau.');
             setMode('register');
             setRegDisplayName('');
@@ -139,7 +158,7 @@ const LoginPage: React.FC = () => {
 
                     {mode === 'login' ? (
                         <form className="space-y-6" onSubmit={handleLogin}>
-                            <Input label="Địa chỉ email" id="email" type="email" autoComplete="email" value={email} onChange={setEmail} />
+                            <Input label="Địa chỉ email" id="email" type="email" autoComplete="email" value={email} onChange={(v) => { setEmail(v); rememberEmail(v); }} />
                             <Input label="Mật khẩu" id="password" type="password" autoComplete="current-password" value={password} onChange={setPassword} />
                             {error && <ErrorBox message={error} />}
                             <button type="submit" disabled={isLoading} className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 disabled:bg-teal-400 dark:disabled:bg-teal-800 disabled:cursor-wait">

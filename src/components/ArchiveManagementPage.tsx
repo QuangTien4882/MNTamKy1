@@ -17,8 +17,8 @@ const LoadingSpinner = () => (
 
 
 const ArchiveManagementPage: React.FC = () => {
-    const { classes, getArchivedRegistrations, archiveRegistrationsByMonth } = useData();
-    const { isLoading, addToast } = useUI();
+    const { classes, getArchivedRegistrations, archiveRegistrationsByMonth, checkBackupNow } = useData();
+    const { addToast } = useUI();
     
     // State for Archiving
     const [targetDate, setTargetDate] = useState(() => {
@@ -27,6 +27,7 @@ const ArchiveManagementPage: React.FC = () => {
         return d;
     });
     const [isArchiveConfirmOpen, setIsArchiveConfirmOpen] = useState(false);
+    const [isArchiving, setIsArchiving] = useState(false);
 
     // State for viewing archives
     const [archiveFilter, setArchiveFilter] = useState({ from: '', to: '' });
@@ -56,6 +57,8 @@ const ArchiveManagementPage: React.FC = () => {
             const settings = { day: reminderDay, hour: reminderHour };
             localStorage.setItem('backupSettings_v1', JSON.stringify(settings));
             addToast('Đã lưu cài đặt nhắc nhở sao lưu.', 'success');
+            // Apply the new rule immediately instead of waiting for reload.
+            checkBackupNow();
         } catch (e) {
             console.error("Failed to save backup settings to localStorage", e);
             addToast('Không thể lưu cài đặt.', 'error');
@@ -90,8 +93,13 @@ const ArchiveManagementPage: React.FC = () => {
     const handleArchive = async () => {
         const year = targetDate.getFullYear();
         const month = targetDate.getMonth() + 1;
-        await archiveRegistrationsByMonth(year, month);
-        setIsArchiveConfirmOpen(false);
+        setIsArchiving(true);
+        try {
+            await archiveRegistrationsByMonth(year, month);
+            setIsArchiveConfirmOpen(false);
+        } finally {
+            setIsArchiving(false);
+        }
     };
 
     const handleFetchArchive = async () => {
@@ -137,7 +145,7 @@ const ArchiveManagementPage: React.FC = () => {
                         </div>
                         <div className="mt-6 flex justify-end space-x-3">
                             <button onClick={() => setIsArchiveConfirmOpen(false)} className="px-4 py-2 text-sm font-medium rounded-md text-gray-700 bg-gray-100 hover:bg-gray-200 dark:bg-gray-600 dark:text-gray-200 dark:hover:bg-gray-500">Hủy</button>
-                            <button onClick={handleArchive} disabled={isLoading} className="px-4 py-2 text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700 disabled:bg-red-400 flex items-center">{isLoading ? <LoadingSpinner /> : 'Xác nhận & Lưu trữ'}</button>
+                            <button onClick={handleArchive} disabled={isArchiving} className="px-4 py-2 text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700 disabled:bg-red-400 flex items-center">{isArchiving ? <LoadingSpinner /> : 'Xác nhận & Lưu trữ'}</button>
                         </div>
                     </div>
                 </div>
