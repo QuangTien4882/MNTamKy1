@@ -2,32 +2,7 @@ import { useState, useEffect, useMemo, useCallback, FormEvent, Dispatch, SetStat
 import { MealType, MealRegistration } from '../types';
 import { useData } from '../contexts/DataContext';
 import { useUI } from '../contexts/UIContext';
-
-// Helper functions (could be moved to a utils file)
-export const formatDate = (date: Date): string => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-};
-
-const getInitialLunchDate = () => {
-    const today = new Date();
-    if (today.getDay() === 0) {
-        today.setDate(today.getDate() + 1);
-    }
-    return formatDate(today);
-};
-
-const getBreakfastDateFrom = (lunchDate: string): string => {
-    if (!lunchDate) return '';
-    const selectedDate = new Date(lunchDate + 'T00:00:00'); 
-    selectedDate.setDate(selectedDate.getDate() + 1);
-    if (selectedDate.getDay() === 0) { 
-        selectedDate.setDate(selectedDate.getDate() + 1);
-    }
-    return formatDate(selectedDate);
-};
+import { formatDate, getInitialLunchDate, getBreakfastDateFrom } from '../utils/date';
 
 export const useDailyRegistrationForm = () => {
   const { editingInfo, addRegistrations, updateRegistrations, clearEditing, getRegistrations } = useData();

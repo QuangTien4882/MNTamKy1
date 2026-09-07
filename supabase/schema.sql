@@ -26,7 +26,9 @@ create table if not exists public.profiles (
 -- update the default of an existing table).
 alter table public.profiles alter column role set default 'Chưa duyệt';
 
--- Auto-create a profile whenever an auth user is created
+-- Auto-create a profile whenever an auth user is created.
+-- Idempotent: if a profile already exists (duplicate/retry), it just syncs the
+-- email + display name without touching role/class (which are set by admins).
 create or replace function public.handle_new_user()
 returns trigger
 language plpgsql
@@ -34,15 +36,54 @@ security definer
 set search_path = public
 as $$
 begin
-  insert into public.profiles (id, email, display_name)
+insert into public.profiles (id, email, display_name)
   values (
     new.id,
     new.email,
-    coalesce(new.raw_user_meta_data ->> 'display_name', split_part(new.email, '@', 1))
-  );
+    coalesce(new.raw_user_meta_data ->> 'display_name', split_part(coalesce(new.email, ''), '@', 1))
+  )
+  on conflict (id) do update
+  set email = excluded.email,
+      display_name = case
+        when coalesce(excluded.display_name, '') = '' then public.profiles.display_name
+        else excluded.display_name
+      end;
   return new;
 end;
 $$;
+
+-- Keep the profile email in sync when the user changes their email in Auth.
+create or replace function public.sync_auth_user_profile()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  update public.profiles
+  set email = new.email,
+      updated_at = now()
+  where id = new.id
+    and email is distinct from new.email;
+  return new;
+end;
+$$;
+
+drop trigger if exists on_auth_user_updated on auth.users;
+create trigger on_auth_user_updated
+  after update on auth.users
+  for each row execute procedure public.sync_auth_user_profile();
+
+-- Backfill: ensure every existing auth user has a profile row, so no user is
+-- left without a profile even if the trigger was added later. Idempotent.
+insert into public.profiles (id, email, display_name)
+select
+  u.id,
+  u.email,
+  coalesce(u.raw_user_meta_data ->> 'display_name', split_part(coalesce(u.email, ''), '@', 1))
+from auth.users u
+on conflict (id) do update
+set email = excluded.email;
 
 drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
@@ -238,7 +279,8 @@ create policy "allow_read_registrations" on public.registrations for select usin
   )
 );
 drop policy if exists "allow_read_announcements" on public.announcements;
-create policy "allow_read_announcements" on public.announcements for select using (auth.role() = 'authenticated');
+-- Announcements are read through the get_announcements RPC (strips reader IDs
+-- for non-admins), or directly by admins/BGH. No broad select policy.
 drop policy if exists "allow_read_audit_logs" on public.audit_logs;
 create policy "allow_read_audit_logs" on public.audit_logs for select using (public.is_admin());
 drop policy if exists "allow_read_archived" on public.archived_registrations;
@@ -281,25 +323,35 @@ create policy "gv_write_own_class_registrations" on public.registrations
     and public.current_user_assigned_class() = class_name
   );
 
--- ---- announcements: Admin / BGH manage; others read only (mark-as-read via trigger) ----
+-- ---- announcements: Admin / BGH manage (read + write); others read via get_announcements RPC ----
 drop policy if exists "allow_write_announcements" on public.announcements;
 drop policy if exists "admin_bgh_write_announcements" on public.announcements;
+drop policy if exists "authenticated_read_announcement" on public.announcements;
+drop policy if exists "authed_update_announcements" on public.announcements;
+drop policy if exists "authed_read_announcements" on public.announcements;
+drop policy if exists "read_announcements_admin_only" on public.announcements;
+drop policy if exists "admin_bgh_update_announcements" on public.announcements;
 create policy "admin_bgh_write_announcements" on public.announcements
   for all using (public.is_admin() or public.is_bgh())
   with check (public.is_admin() or public.is_bgh());
-drop policy if exists "authenticated_read_announcement" on public.announcements;
-create policy "authenticated_read_announcement" on public.announcements
-  for update using (auth.role() = 'authenticated')
-  with check (auth.role() = 'authenticated');
 
--- ---- audit_logs: any authenticated may insert; Admin deletes ----
+-- ---- audit_logs: any authenticated may insert (must record the acting user); Admin deletes ----
 drop policy if exists "allow_write_audit_logs" on public.audit_logs;
 drop policy if exists "authenticated_insert_audit_logs" on public.audit_logs;
 create policy "authenticated_insert_audit_logs" on public.audit_logs
-  for insert with check (auth.role() = 'authenticated');
+  for insert with check (
+    auth.role() = 'authenticated'
+    and user_id = auth.uid()
+  );
 drop policy if exists "admin_delete_audit_logs" on public.audit_logs;
 create policy "admin_delete_audit_logs" on public.audit_logs
   for delete using (public.is_admin());
+
+-- Audit log integrity: user_id must always match the acting user, and the row
+-- cannot be edited after insert (append-only history of who did what).
+drop policy if exists "no_update_audit_logs" on public.audit_logs;
+create policy "no_update_audit_logs" on public.audit_logs
+  for update using (false) with check (false);
 
 -- ---- archived_registrations: Admin only ----
 drop policy if exists "allow_write_archived" on public.archived_registrations;
@@ -361,6 +413,9 @@ begin
 end;
 $$;
 
+revoke execute on function public.archive_registrations(date, date) from public;
+grant execute on function public.archive_registrations(date, date) to authenticated;
+
 -- ============================================
 -- RPC: Delete an auth user + profile (by admin)
 -- ============================================
@@ -377,6 +432,9 @@ begin
   delete from auth.users where id = p_user_id;
 end;
 $$;
+
+revoke execute on function public.delete_user(uuid) from public;
+grant execute on function public.delete_user(uuid) to authenticated;
 
 -- ============================================
 -- RPC: Classes already registered for a date (any authenticated user)
@@ -558,3 +616,100 @@ $$;
 
 revoke execute on function public.rename_class(text, text, integer) from public;
 grant execute on function public.rename_class(text, text, integer) to authenticated;
+
+-- ============================================
+-- RPC: Read announcements with privacy-safe read_by.
+-- Admin / BGH (who manage readership) get the full list of reader IDs.
+-- Everyone else only sees their own read state, so other users' internal UUIDs
+-- are never exposed. `total` is the global announcement count (for pagination).
+-- Order is newest first (matches the previous direct query).
+-- ============================================
+create or replace function public.get_announcements(p_limit integer)
+returns table(
+  id uuid,
+  title text,
+  content text,
+  created_at timestamptz,
+  created_by text,
+  created_by_id uuid,
+  read_by text[],
+  total bigint
+)
+language plpgsql
+security definer
+set search_path = public
+stable
+as $$
+declare
+  v_total bigint;
+begin
+  select count(*) into v_total from public.announcements;
+
+  if public.is_admin() or public.is_bgh() then
+    return query
+      select a.id, a.title, a.content, a.created_at, a.created_by, a.created_by_id,
+             coalesce(a.read_by, '{}'::text[]) as read_by,
+             v_total as total
+      from public.announcements a
+      order by a.created_at desc
+      limit p_limit;
+  else
+    return query
+      select a.id, a.title, a.content, a.created_at, a.created_by, a.created_by_id,
+             case when (auth.uid()::text = any(coalesce(a.read_by, '{}'::text[])))
+                  then array[auth.uid()::text]
+                  else '{}'::text[]
+             end as read_by,
+             v_total as total
+      from public.announcements a
+      order by a.created_at desc
+      limit p_limit;
+  end if;
+end;
+$$;
+
+revoke execute on function public.get_announcements(integer) from public;
+grant execute on function public.get_announcements(integer) to authenticated;
+
+drop policy if exists "allow_read_announcements" on public.announcements;
+drop policy if exists "authed_read_announcements" on public.announcements;
+drop policy if exists "read_announcements_admin_only" on public.announcements;
+-- Direct reads of the announcements table (including the sensitive read_by column)
+-- are limited to admins/BGH. Everyone else reads via the get_announcements RPC,
+-- which strips other users' reader IDs.
+create policy "read_announcements_admin_only" on public.announcements
+  for select using (public.is_admin() or public.is_bgh());
+
+-- ============================================
+-- RPC: Atomically mark the current user as a reader of an announcement.
+-- Server-side counterpart to the read_by column, keeps the user's read state
+-- private (no need for the client to read the full reader list).
+-- ============================================
+create or replace function public.mark_announcement_read(p_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid text := auth.uid()::text;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated' using errcode = '42501';
+  end if;
+  update public.announcements
+  set read_by = (
+    select array_agg(distinct x order by x)
+    from unnest(
+      case when v_uid = any(coalesce(read_by, '{}'::text[]))
+           then read_by
+           else array_append(coalesce(read_by, '{}'::text[]), v_uid)
+      end
+    ) x
+  )
+  where id = p_id;
+end;
+$$;
+
+revoke execute on function public.mark_announcement_read(uuid) from public;
+grant execute on function public.mark_announcement_read(uuid) to authenticated;

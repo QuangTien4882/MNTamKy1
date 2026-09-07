@@ -5,6 +5,7 @@ interface UIContextType {
   toasts: Toast[];
   notifications: Notification[];
   isLoading: boolean;
+  isOffline: boolean;
   addToast: (message: string, type: 'success' | 'error') => void;
   addNotification: (message: string) => void;
   setIsLoading: (loading: boolean) => void;
@@ -16,9 +17,25 @@ export const UIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [activeRequests, setActiveRequests] = useState(0);
+  const [isOffline, setIsOffline] = useState(() => 
+    typeof navigator !== 'undefined' ? !navigator.onLine : false
+  );
   const isLoading = activeRequests > 0;
   const nextId = useRef(0);
   const timersRef = useRef<number[]>([]);
+
+  useEffect(() => {
+    const handleOnline = () => setIsOffline(false);
+    const handleOffline = () => setIsOffline(true);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -52,10 +69,11 @@ export const UIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
       toasts,
       notifications,
       isLoading,
+      isOffline,
       addToast,
       addNotification,
       setIsLoading
-  }), [toasts, notifications, isLoading, addToast, addNotification]);
+  }), [toasts, notifications, isLoading, isOffline, addToast, addNotification]);
 
   return (
     <UIContext.Provider value={value}>

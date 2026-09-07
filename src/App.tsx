@@ -1,13 +1,14 @@
-import React, { useState, Suspense, lazy, useEffect } from 'react';
+import React, { useState, Suspense, lazy } from 'react';
 import ToastContainer from './components/ToastContainer';
 import NotificationContainer from './components/NotificationContainer';
 import { DataProvider, useData } from './contexts/DataContext';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
-import { UIProvider } from './contexts/UIContext';
+import { UIProvider, useUI } from './contexts/UIContext';
 import { useTheme } from './contexts/ThemeContext';
 import { View, Tab, Role } from './types';
 import { SKELETONS } from './components/skeletons';
 import OfflineIndicator from './components/OfflineIndicator';
+import UpdateBanner from './components/UpdateBanner';
 import ErrorBoundary from './components/ErrorBoundary';
 
 const DailyRegistrationForm = lazy(() => import('./components/DailyRegistrationForm'));
@@ -23,23 +24,10 @@ const AnnouncementsPage = lazy(() => import('./components/AnnouncementsPage'));
 const AppContent: React.FC = () => {
   const { currentUser, authLoading } = useAuth();
   const { unreadAnnouncementsCount } = useData();
+  const { isOffline } = useUI();
   const [view, setView] = useState<View>(View.Dashboard);
   const [activeTab, setActiveTab] = useState<Tab>(Tab.Daily);
   const { theme, toggleTheme } = useTheme();
-  const [isOffline, setIsOffline] = useState(!navigator.onLine);
-
-  useEffect(() => {
-    const handleOnline = () => setIsOffline(false);
-    const handleOffline = () => setIsOffline(true);
-
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
-  }, []);
 
   if (authLoading) {
     return (
@@ -190,6 +178,7 @@ const AppContent: React.FC = () => {
     <div className="bg-gray-50 dark:bg-gray-900 min-h-screen transition-colors">
       <ToastContainer />
       <NotificationContainer />
+      <UpdateBanner />
       <OfflineIndicator isOffline={isOffline} />
 
       <header className="bg-white dark:bg-gray-800 shadow-md sticky top-0 z-20 transition-colors no-print h-[56px] flex items-center">

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { MealType, Role } from '../types';
 import { useData } from '../contexts/DataContext';
 import { useAuth } from '../contexts/AuthContext';
+import { useUI } from '../contexts/UIContext';
 import { useMultiDayRegistrationForm } from '../hooks/useMultiDayRegistrationForm';
 import CalendarPicker from './CalendarPicker';
 import ClassCombobox from './ClassCombobox';
@@ -86,6 +87,7 @@ const formatShortDateForTab = (date: Date): string => {
 const MultiDayRegistrationForm: React.FC<{}> = () => {
   const { classes } = useData();
   const { currentUser } = useAuth();
+  const { isOffline } = useUI();
   const [activeDate, setActiveDate] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   
@@ -146,7 +148,7 @@ const MultiDayRegistrationForm: React.FC<{}> = () => {
                     <OverwriteComparison existing={overwriteConfirmation.existing} newData={overwriteConfirmation.data} />
                     <div className="mt-6 flex justify-end space-x-3">
                         <button type="button" onClick={() => setOverwriteConfirmation(null)} className="px-4 py-2 text-sm font-medium rounded-md text-gray-700 bg-gray-100 hover:bg-gray-200 dark:bg-gray-600 dark:text-gray-200 dark:hover:bg-gray-500">Hủy</button>
-                        <button type="button" onClick={() => handleConfirm(overwriteConfirmation.data)} disabled={submitting} className="flex justify-center items-center px-4 py-2 text-sm font-medium text-white bg-yellow-500 hover:bg-yellow-600 rounded-md">{submitting ? <LoadingSpinner /> : 'Xác nhận & Ghi đè'}</button>
+                        <button type="button" onClick={() => handleConfirm(overwriteConfirmation.data)} disabled={submitting || isOffline} className="flex justify-center items-center px-4 py-2 text-sm font-medium text-white bg-yellow-500 hover:bg-yellow-600 rounded-md">{submitting ? <LoadingSpinner /> : 'Xác nhận & Ghi đè'}</button>
                     </div>
                 </div>
             </div>
@@ -176,7 +178,7 @@ const MultiDayRegistrationForm: React.FC<{}> = () => {
             </div>
             <div className="mt-6 flex justify-end space-x-3">
               <button type="button" onClick={() => setConfirmationData(null)} className="px-4 py-2 text-sm font-medium rounded-md text-gray-700 bg-gray-100 hover:bg-gray-200 dark:bg-gray-600 dark:text-gray-200 dark:hover:bg-gray-500">Sửa lại</button>
-              <button type="button" onClick={() => handleConfirm(confirmationData)} disabled={submitting} className="flex justify-center items-center px-4 py-2 text-sm font-medium text-white bg-teal-600 hover:bg-teal-700 rounded-md disabled:bg-teal-400">{submitting ? <LoadingSpinner /> : 'Xác nhận'}</button>
+              <button type="button" onClick={() => handleConfirm(confirmationData)} disabled={submitting || isOffline} className="flex justify-center items-center px-4 py-2 text-sm font-medium text-white bg-teal-600 hover:bg-teal-700 rounded-md disabled:bg-teal-400">{submitting ? <LoadingSpinner /> : 'Xác nhận'}</button>
             </div>
           </div>
         </div>
@@ -258,7 +260,7 @@ const MultiDayRegistrationForm: React.FC<{}> = () => {
         )}
       </div>
 
-<button type="submit" disabled={formDates.length === 0 || classes.length === 0 || submitting}
+<button type="submit" disabled={formDates.length === 0 || classes.length === 0 || submitting || isOffline}
         className="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 transition-colors disabled:bg-gray-400 dark:disabled:bg-gray-600 disabled:cursor-not-allowed">
         {submitting ? <LoadingSpinner /> : 'Đăng ký cho các ngày đã chọn'}
         </button>

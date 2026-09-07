@@ -5,6 +5,7 @@ import { supabase } from '../supabaseClient';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import { useAuth } from './AuthContext';
 import { useUI } from './UIContext';
+import { csvCell } from '../utils/csv';
 
 
 interface DataContextType {
@@ -340,13 +341,18 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const refetchAnnouncements = useCallback(async (): Promise<void> => {
     const limit = announcementsLimitRef.current;
-    const { data, count } = await supabase
-        .from('announcements')
-        .select('*', { count: 'exact' })
-        .order('created_at', { ascending: false })
-        .limit(limit);
-    setAnnouncements((data || []).map(mapAnnouncementRow));
-    setAnnouncementsTotal(count || 0);
+    const { data, error } = await supabase.rpc('get_announcements', { p_limit: limit });
+    if (error) {
+        console.error("refetchAnnouncements error:", error);
+        return;
+    }
+    const rows = (data || []) as {
+        id: string; title: string; content: string;
+        created_at: string; created_by: string; created_by_id: string;
+        read_by: string[]; total: number;
+    }[];
+    setAnnouncements(rows.map(mapAnnouncementRow));
+    setAnnouncementsTotal(rows.length > 0 ? rows[0].total : 0);
   }, []);
 
   const loadMoreAnnouncements = useCallback(() => {
@@ -383,11 +389,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             const userQuery = canReadUsers
                 ? supabase.from('profiles').select('*')
                 : Promise.resolve({ data: null });
-            const annQuery = supabase
-                .from('announcements')
-                .select('*', { count: 'exact' })
-                .order('created_at', { ascending: false })
-                .limit(ANNOUNCEMENTS_PAGE_SIZE);
+            const annQuery = supabase.rpc('get_announcements', { p_limit: ANNOUNCEMENTS_PAGE_SIZE });
 
             const [classResult, userResult, annResult] = await Promise.allSettled([
                 classQuery, userQuery, annQuery,
@@ -418,9 +420,13 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             }
 
             if (annResult.status === 'fulfilled') {
-                const { data: annRows, count } = annResult.value;
-                setAnnouncements((annRows || []).map(mapAnnouncementRow));
-                setAnnouncementsTotal(count || 0);
+                const annRows = (annResult.value.data || []) as {
+                    id: string; title: string; content: string;
+                    created_at: string; created_by: string; created_by_id: string;
+                    read_by: string[]; total: number;
+                }[];
+                setAnnouncements(annRows.map(mapAnnouncementRow));
+                setAnnouncementsTotal(annRows.length > 0 ? annRows[0].total : 0);
             } else {
                 console.error("Error fetching announcements:", annResult.reason);
             }
@@ -466,6 +472,10 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const addRegistrations = useCallback(async (newRegistrations: Omit<MealRegistration, 'id' | 'updatedAt'>[]) => {
     if (!currentUser) {
         addToast("Lỗi: Không tìm thấy thông tin người dùng.", "error");
+        return;
+    }
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        addToast("Đang mất mạng, không thể lưu.", "error");
         return;
     }
     if (!newRegistrations.every(r => canWriteRegistrations(r.className))) {
@@ -722,7 +732,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             if (format === 'csv') {
                 const separator = ';';
                 const headers = ["Lớp", "Ngày", MealType.KidsBreakfast, "Người ĐK", MealType.KidsLunch, "Người ĐK", MealType.TeachersLunch, "Người ĐK", "Tổng cộng"];
-                let csvContent = "\uFEFF" + headers.map(h => `"${h}"`).join(separator) + '\r\n';
+                let csvContent = "\uFEFF" + headers.map(csvCell).join(separator) + '\r\n';
 
                 exportableData.forEach((item: ExportableRow) => {
                     const rowTotal = Object.values(item.meals).reduce((sum, meal) => sum + (meal?.count || 0), 0);
@@ -732,10 +742,10 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                         item.meals[MealType.KidsLunch]?.count || 0, item.meals[MealType.KidsLunch]?.registeredBy || '',
                         item.meals[MealType.TeachersLunch]?.count || 0, item.meals[MealType.TeachersLunch]?.registeredBy || '',
                         rowTotal
-                    ].map(val => `"${val}"`);
+                    ].map(csvCell);
                     csvContent += row.join(separator) + '\r\n';
                 });
-                const totalRow = ["Tổng cộng", "", totals[MealType.KidsBreakfast], "", totals[MealType.KidsLunch], "", totals[MealType.TeachersLunch], "", Object.values(totals).reduce((s, c) => s + c, 0)].map(v => `"${v}"`);
+                const totalRow = ["Tổng cộng", "", totals[MealType.KidsBreakfast], "", totals[MealType.KidsLunch], "", totals[MealType.TeachersLunch], "", Object.values(totals).reduce((s, c) => s + c, 0)].map(csvCell);
                 csvContent += totalRow.join(separator) + '\r\n';
                 
                 const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -1060,12 +1070,8 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
         try {
             for (const id of announcementIds) {
-                const { data } = await supabase.from('announcements').select('read_by').eq('id', id).maybeSingle();
-                const current = Array.isArray(data?.read_by) ? data.read_by : [];
-                if (!current.includes(currentUser.id)) {
-                    const next = [...current, currentUser.id];
-                    await supabase.from('announcements').update({ read_by: next }).eq('id', id);
-                }
+                const { error } = await supabase.rpc('mark_announcement_read', { p_id: id });
+                if (error) throw error;
             }
         } catch (error) {
             console.warn("Failed to mark announcements as read on server:", error);

@@ -1,4 +1,5 @@
 import React from 'react';
+import { stripNonDigits } from '../utils/numbers';
 
 interface NumberInputProps {
     id: string;
@@ -12,10 +13,7 @@ interface NumberInputProps {
 
 const NumberInput: React.FC<NumberInputProps> = ({ id, value, onChange, min = 0, max, disabled, placeholder }) => {
     const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        // Force digits-only so negative signs, 'e'/'.' and invalid values can never
-        // reach state (browsers report those as '' or raw '-'/'NaN').
-        const cleaned = e.target.value.replace(/[^0-9]/g, '');
-        onChange(cleaned);
+        onChange(stripNonDigits(e.target.value));
     };
 
     return (
