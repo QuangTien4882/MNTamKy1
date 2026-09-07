@@ -9,10 +9,10 @@ interface DashboardPageProps {
 }
 
 const formatDate = (date: Date): string => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
 };
 
 const BackupPrompt: React.FC = () => {
@@ -44,7 +44,7 @@ const BackupPrompt: React.FC = () => {
     return (
         <div className="bg-blue-50 dark:bg-blue-900/60 p-5 rounded-xl shadow-lg border-2 border-dashed border-blue-200 dark:border-blue-800 fade-in">
             <div className="flex items-start">
-                 <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10 text-blue-500 mr-4" viewBox="0 0 20 20" fill="currentColor">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10 text-blue-500 mr-4" viewBox="0 0 20 20" fill="currentColor">
                     <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.707-10.293a1 1 0 00-1.414-1.414l-3 3a1 1 0 001.414 1.414L10 9.414l2.293 2.293a1 1 0 001.414-1.414l-3-3z" clipRule="evenodd" />
                 </svg>
                 <div>
@@ -57,9 +57,9 @@ const BackupPrompt: React.FC = () => {
                             {isLoading && <LoadingSpinner />} Xuất Excel
                         </button>
                         <button onClick={() => handleBackup('pdf')} disabled={isLoading} className="flex items-center px-4 py-2 rounded-md text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400">
-                             {isLoading && <LoadingSpinner />} Xuất PDF
+                            {isLoading && <LoadingSpinner />} Xuất PDF
                         </button>
-                         <button onClick={dismissBackupPrompt} disabled={isLoading} className="px-4 py-2 rounded-md text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700">
+                        <button onClick={dismissBackupPrompt} disabled={isLoading} className="px-4 py-2 rounded-md text-sm font-medium text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-700">
                             Bỏ qua
                         </button>
                     </div>
@@ -142,7 +142,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ setView }) => {
             let today = new Date();
             if (today.getDay() === 0) today.setDate(today.getDate() + 1);
             const currentDayStr = formatDate(today);
-            
+
             let tomorrow = new Date(today);
             tomorrow.setDate(today.getDate() + 1);
             if (tomorrow.getDay() === 0) tomorrow.setDate(tomorrow.getDate() + 1);
@@ -187,13 +187,13 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ setView }) => {
                     totals[MealType.KidsBreakfast] += reg.count;
                 }
             });
-            
+
             const missingClasses = classes
                 .map(c => c.name)
                 .filter(name => !registeredClassesToday.has(name));
-                
+
             const isTeacherClassRegistered = !!(currentUser?.role === Role.GV && registeredClassesToday.has(currentUser.assignedClass || ''));
-            
+
             setDashboardData({
                 totals,
                 totalMeals: Object.values(totals).reduce((a, b) => a + b, 0),
@@ -206,7 +206,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ setView }) => {
 
         fetchDashboardData();
     }, [classes, getRegistrations, getRegisteredClasses, currentUser, dataVersion]);
-    
+
     const handleEdit = () => {
         if (dashboardData?.currentDay && currentUser?.assignedClass) {
             requestEdit(currentUser.assignedClass, dashboardData.currentDay);
@@ -219,57 +219,57 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ setView }) => {
     }
 
     const { totals, totalMeals, missingClasses, isTeacherClassRegistered, currentDay } = dashboardData;
-    
+
     const todayString = new Date(currentDay + 'T00:00:00').toLocaleDateString('vi-VN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-    
+
     const missingClassesCardClass = missingClasses.length > 0
-    ? 'bg-red-50 dark:bg-red-900/60 border border-red-200 dark:border-red-800'
-    : 'bg-green-50 dark:bg-green-900/60 border border-green-200 dark:border-green-800';
+        ? 'bg-red-50 dark:bg-red-900/60 border border-red-200 dark:border-red-800'
+        : 'bg-green-50 dark:bg-green-900/60 border border-green-200 dark:border-green-800';
 
     return (
         <div className="space-y-8 fade-in">
             {showBackupPrompt && <BackupPrompt />}
             <div>
-                <h1 className="text-3xl font-bold text-gray-800 dark:text-gray-100">Bảng điều khiển</h1>
+                <h1 className="text-3xl font-bold text-gray-800 dark:text-gray-100">Bảng tổng hợp</h1>
                 <p className="mt-1 text-gray-600 dark:text-gray-400">Tổng quan đăng ký suất ăn cho {todayString}</p>
             </div>
-            
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <StatCard 
-                    title="Tổng suất ăn đăng ký" 
+                <StatCard
+                    title="Tổng suất ăn đăng ký"
                     value={totalMeals.toLocaleString('vi-VN')}
                     iconContainer={<TotalMealsIconContainer />}
                 >
-                   <div className="space-y-2">
-                     <p className="flex justify-between"><span>{MealType.KidsLunch}:</span> <span className="font-semibold">{totals[MealType.KidsLunch].toLocaleString('vi-VN')}</span></p>
-                     <p className="flex justify-between"><span>{MealType.TeachersLunch}:</span> <span className="font-semibold">{totals[MealType.TeachersLunch].toLocaleString('vi-VN')}</span></p>
-                     <p className="flex justify-between"><span>{MealType.KidsBreakfast} (cho ngày mai):</span> <span className="font-semibold">{totals[MealType.KidsBreakfast].toLocaleString('vi-VN')}</span></p>
-                   </div>
+                    <div className="space-y-2">
+                        <p className="flex justify-between"><span>{MealType.KidsLunch}:</span> <span className="font-semibold">{totals[MealType.KidsLunch].toLocaleString('vi-VN')}</span></p>
+                        <p className="flex justify-between"><span>{MealType.TeachersLunch}:</span> <span className="font-semibold">{totals[MealType.TeachersLunch].toLocaleString('vi-VN')}</span></p>
+                        <p className="flex justify-between"><span>{MealType.KidsBreakfast} (cho ngày mai):</span> <span className="font-semibold">{totals[MealType.KidsBreakfast].toLocaleString('vi-VN')}</span></p>
+                    </div>
                 </StatCard>
-                <StatCard 
+                <StatCard
                     title="Các lớp chưa đăng ký"
                     value={missingClasses.length.toLocaleString('vi-VN')}
                     iconContainer={<MissingClassesIconContainer count={missingClasses.length} />}
                     className={missingClassesCardClass}
                 >
-                     {missingClasses.length > 0 ? (
+                    {missingClasses.length > 0 ? (
                         <div className="flex flex-wrap gap-2 max-h-24 overflow-y-auto">
-                           {missingClasses.map((c: string) => (
-                             <span key={c} className="px-2.5 py-1 rounded-full bg-red-200 dark:bg-red-800 text-red-800 dark:text-red-100 font-semibold text-xs">
-                                {c}
-                             </span>
-                           ))}
+                            {missingClasses.map((c: string) => (
+                                <span key={c} className="px-2.5 py-1 rounded-full bg-red-200 dark:bg-red-800 text-red-800 dark:text-red-100 font-semibold text-xs">
+                                    {c}
+                                </span>
+                            ))}
                         </div>
                     ) : <p className="text-green-600 dark:text-green-400 font-medium">Tuyệt vời! Tất cả các lớp đã đăng ký.</p>}
                 </StatCard>
             </div>
-            
+
             {/* Role-specific Card */}
             {currentUser?.role === Role.GV ? (
                 isTeacherClassRegistered ? (
                     <div className="bg-green-50 dark:bg-green-900/60 p-6 rounded-xl shadow-lg border border-green-200 dark:border-green-800">
                         <h3 className="text-lg font-bold text-green-800 dark:text-green-200">Lớp {currentUser.assignedClass} đã đăng ký!</h3>
-                         <div className="mt-6 flex gap-3">
+                        <div className="mt-6 flex gap-3">
                             <ActionButton onClick={handleEdit} text="Chỉnh sửa" icon={<svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor"><path d="M17.414 2.586a2 2 0 00-2.828 0L7 10.172V13h2.828l7.586-7.586a2 2 0 000-2.828z" /><path fillRule="evenodd" d="M2 6a2 2 0 012-2h4a1 1 0 010 2H4v10h10v-4a1 1 0 112 0v4a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clipRule="evenodd" /></svg>} className="bg-blue-600 hover:bg-blue-700" />
                             <ActionButton onClick={() => setView(View.List)} text="Xem danh sách" icon={<svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor"><path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z" /><path fillRule="evenodd" d="M4 5a2 2 0 012-2h8a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clipRule="evenodd" /></svg>} className="bg-gray-600 hover:bg-gray-700" />
                         </div>
@@ -277,7 +277,7 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ setView }) => {
                 ) : (
                     <div className="bg-red-50 dark:bg-red-900/60 p-6 rounded-xl shadow-lg border border-red-200 dark:border-red-800 flex flex-col items-center text-center">
                         <svg xmlns="http://www.w3.org/2000/svg" className="h-16 w-16 text-red-400 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                         </svg>
                         <h3 className="text-xl font-bold text-red-800 dark:text-red-200">Lớp {currentUser.assignedClass} chưa đăng ký cho hôm nay!</h3>
                         <p className="text-sm text-red-700 dark:text-red-300 mt-2">Vui lòng đăng ký suất ăn để đảm bảo các bé có bữa ăn đầy đủ.</p>
@@ -288,11 +288,11 @@ const DashboardPage: React.FC<DashboardPageProps> = ({ setView }) => {
                 )
             ) : (
                 <div className="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-lg">
-                     <h3 className="text-lg font-bold text-gray-800 dark:text-gray-100">Thao tác nhanh</h3>
-                     <div className="mt-4 flex flex-wrap gap-4">
+                    <h3 className="text-lg font-bold text-gray-800 dark:text-gray-100">Thao tác nhanh</h3>
+                    <div className="mt-4 flex flex-wrap gap-4">
                         <ActionButton onClick={() => setView(View.List)} text="Xem danh sách" icon={<svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor"><path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z" /><path fillRule="evenodd" d="M4 5a2 2 0 012-2h8a2 2 0 012 2v10a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clipRule="evenodd" /></svg>} className="bg-teal-600 hover:bg-teal-700" />
                         <ActionButton onClick={() => setView(View.Summary)} text="Xem báo cáo" icon={<svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 20 20" fill="currentColor"><path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" /></svg>} className="bg-blue-600 hover:bg-blue-700" />
-                     </div>
+                    </div>
                 </div>
             )}
 

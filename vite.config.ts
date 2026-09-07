@@ -10,7 +10,7 @@ export default defineConfig({
       registerType: 'prompt',
       includeAssets: ['icon-192.png', 'icon-512.png', 'apple-touch-icon.png'],
       manifest: {
-        short_name: 'MN Tam Kỳ 1',
+        short_name: 'Mầm non TK1',
         name: 'Đăng ký suất ăn - Mầm non Tam Kỳ 1',
         icons: [
           {

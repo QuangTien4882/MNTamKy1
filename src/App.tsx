@@ -10,6 +10,7 @@ import { SKELETONS } from './components/skeletons';
 import OfflineIndicator from './components/OfflineIndicator';
 import UpdateBanner from './components/UpdateBanner';
 import ErrorBoundary from './components/ErrorBoundary';
+import BrandLogo from './components/Logo';
 
 const DailyRegistrationForm = lazy(() => import('./components/DailyRegistrationForm'));
 const MultiDayRegistrationForm = lazy(() => import('./components/MultiDayRegistrationForm'));
@@ -47,24 +48,8 @@ const AppContent: React.FC = () => {
     return <LoginPage />;
   }
 
-  const Logo = () => (
-    <div className="flex items-center space-x-3">
-      <div className="w-9 h-9 bg-amber-400 rounded-full flex items-center justify-center shadow">
-         <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-white" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M21.8,4.27A2,2,0,0,0,20,3H4A2,2,0,0,0,2.2,4.27l2.85,9.26a2,2,0,0,0,2,1.47H17a2,2,0,0,0,2-1.47Z" />
-            <path d="M5,17H19a1,1,0,0,1,0,2H5a1,1,0,0,1,0-2Z" />
-            <path d="M12 1a3.89 3.89 0 00-4 .78 1 1 0 101.41 1.42A1.9 1.9 0 0112 2a1.89 1.89 0 012.55.79 1 1 0 001.41-1.42A3.88 3.88 0 0012 1zM8 1a3.89 3.89 0 00-4 .78 1 1 0 101.41 1.42A1.9 1.9 0 018 2a1.89 1.89 0 012.55.79 1 1 0 001.41-1.42A3.88 3.88 0 008 1zM16 1a3.89 3.89 0 00-4 .78 1 1 0 101.41 1.42A1.9 1.9 0 0116 2a1.89 1.89 0 012.55.79 1 1 0 001.41-1.42A3.88 3.88 0 0016 1z" />
-        </svg>
-      </div>
-      <h1 className="text-xl sm:text-2xl font-bold text-gray-800 dark:text-gray-100 hidden md:block">
-        Mầm non Tam Kỳ 1
-      </h1>
-       <h1 className="text-lg font-bold text-gray-800 dark:text-gray-100 md:hidden">
-        Mầm non Tam Kỳ 1
-      </h1>
-    </div>
-  );
-  
+  const Logo = () => <BrandLogo compact />;
+
   const ICONS: { [key in View]: React.ReactElement } = {
     [View.Dashboard]: (
         <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>

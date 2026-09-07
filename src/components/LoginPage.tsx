@@ -1,5 +1,6 @@
 import React, { useState, FormEvent } from 'react';
 import { useAuth } from '../contexts/AuthContext';
+import { LogoMark } from './Logo';
 
 const EMAIL_STORAGE_KEY = 'remembered_login_email';
 
@@ -120,19 +121,13 @@ const LoginPage: React.FC = () => {
     return (
         <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
             <div className="sm:mx-auto sm:w-full sm:max-w-md">
-                 <div className="flex justify-center">
-                    <div className="w-14 h-14 bg-amber-400 rounded-full flex items-center justify-center shadow-md">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-white" viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M21.8,4.27A2,2,0,0,0,20,3H4A2,2,0,0,0,2.2,4.27l2.85,9.26a2,2,0,0,0,2,1.47H17a2,2,0,0,0,2-1.47Z" />
-                            <path d="M5,17H19a1,1,0,0,1,0,2H5a1,1,0,0,1,0-2Z" />
-                            <path d="M12 1a3.89 3.89 0 00-4 .78 1 1 0 101.41 1.42A1.9 1.9 0 0112 2a1.89 1.89 0 012.55.79 1 1 0 001.41-1.42A3.88 3.88 0 0012 1zM8 1a3.89 3.89 0 00-4 .78 1 1 0 101.41 1.42A1.9 1.9 0 018 2a1.89 1.89 0 012.55.79 1 1 0 001.41-1.42A3.88 3.88 0 008 1zM16 1a3.89 3.89 0 00-4 .78 1 1 0 101.41 1.42A1.9 1.9 0 0116 2a1.89 1.89 0 012.55.79 1 1 0 001.41-1.42A3.88 3.88 0 0016 1z" />
-                        </svg>
-                    </div>
+                <div className="flex justify-center">
+                    <LogoMark className="w-16 h-16" />
                 </div>
                 <h2 className="mt-4 text-center text-3xl font-extrabold text-gray-900 dark:text-gray-100">
-                    Trường Mầm non Tam Kỳ 1
+                    Mầm non Tam Kỳ 1
                 </h2>
-                 <p className="mt-2 text-center text-lg text-gray-600 dark:text-gray-400">
+                <p className="mt-2 text-center text-lg text-gray-600 dark:text-gray-400">
                     Hệ thống đăng ký suất ăn
                 </p>
             </div>
