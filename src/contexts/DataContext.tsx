@@ -1,5 +1,6 @@
 import React, { createContext, useState, useEffect, useCallback, useContext, ReactNode, useMemo, useRef } from 'react';
 import { MealRegistration, ClassInfo, User, Role, Announcement, AuditLog, AuditLogAction, MealType } from '../types';
+import type { ClassRow, ProfileRow, RegistrationRow, AnnouncementRow, AuditLogRow, ArchivedRegistrationRow } from '../database.types';
 import { supabase } from '../supabaseClient';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import { useAuth } from './AuthContext';
@@ -100,38 +101,38 @@ const sortClasses = (classes: ClassInfo[]): ClassInfo[] => {
     });
 };
 
-const toIso = (value: any): string | undefined => {
+const toIso = (value: string | null | undefined): string | undefined => {
     if (!value) return undefined;
     return new Date(value).toISOString();
 };
 
-const mapClassRow = (row: any): ClassInfo => ({
+const mapClassRow = (row: ClassRow): ClassInfo => ({
     id: String(row.id),
     name: row.name,
     studentCount: row.student_count,
     updatedAt: toIso(row.updated_at),
 });
 
-const mapUserRow = (row: any): User => ({
+const mapUserRow = (row: ProfileRow): User => ({
     id: row.id,
     email: row.email || '',
-    displayName: row.display_name,
-    role: row.role,
+    displayName: row.display_name || '',
+    role: row.role as Role,
     assignedClass: row.assigned_class || undefined,
 });
 
-const mapRegistrationRow = (row: any): MealRegistration => ({
+const mapRegistrationRow = (row: RegistrationRow): MealRegistration => ({
     id: row.id,
     className: row.class_name,
     date: row.date,
-    mealType: row.meal_type,
+    mealType: row.meal_type as MealType,
     count: row.count,
     updatedAt: toIso(row.updated_at),
     registeredBy: row.registered_by || undefined,
     registeredById: row.registered_by_id || undefined,
 });
 
-const mapAnnouncementRow = (row: any): Announcement => ({
+const mapAnnouncementRow = (row: AnnouncementRow): Announcement => ({
     id: row.id,
     title: row.title,
     content: row.content,
@@ -141,14 +142,31 @@ const mapAnnouncementRow = (row: any): Announcement => ({
     readBy: row.read_by || [],
 });
 
-const mapAuditLogRow = (row: any): AuditLog => ({
+const mapAuditLogRow = (row: AuditLogRow): AuditLog => ({
     id: row.id,
     timestamp: toIso(row.timestamp) || '',
     userId: row.user_id || '',
     userName: row.user_name || '',
-    action: row.action,
+    action: row.action as AuditLogAction,
     details: row.details || {},
 });
+
+const mapArchivedRegistrationRow = (row: ArchivedRegistrationRow): MealRegistration => ({
+    id: row.id,
+    className: row.class_name,
+    date: row.date,
+    mealType: row.meal_type as MealType,
+    count: row.count,
+    updatedAt: toIso(row.updated_at),
+    registeredBy: row.registered_by || undefined,
+    registeredById: row.registered_by_id || undefined,
+});
+
+// In-flight request dedupe for getRegistrations: several components (e.g. the
+// daily and multi-day forms) fetch the same rows in the same frame. The pending
+// entry is dropped once settled, so results always stay fresh.
+type RegistrationQueryResult = { registrations: MealRegistration[]; totalCount: number; hasMore: boolean };
+const registrationRequestCache = new Map<string, Promise<RegistrationQueryResult>>();
 
 export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const { currentUser } = useAuth();
@@ -203,7 +221,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
   const triggerRefetch = () => setDataVersion(v => v + 1);
 
-   const logAction = useCallback(async (action: AuditLogAction, details: Record<string, any>) => {
+   const logAction = useCallback(async (action: AuditLogAction, details: Record<string, unknown>) => {
     if (!currentUser) return;
     try {
         await supabase.from('audit_logs').insert({
@@ -221,7 +239,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const isAdmin = currentUser?.role === Role.Admin;
   const isBGH = currentUser?.role === Role.BGH;
   // Only Admin/BGH load the full user list (RLS restricts profiles reads accordingly).
-  const canReadUsers = isAdmin || isBGH;
+  const canReadUsers = useMemo(() => isAdmin || isBGH, [isAdmin, isBGH]);
 
   const canWriteRegistrations = (className?: string): boolean => {
     if (!currentUser) return false;
@@ -371,20 +389,41 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 .order('created_at', { ascending: false })
                 .limit(ANNOUNCEMENTS_PAGE_SIZE);
 
-            const [{ data: classRows }, { data: userRows }, { data: annRows, count }] = await Promise.all([
+            const [classResult, userResult, annResult] = await Promise.allSettled([
                 classQuery, userQuery, annQuery,
             ]);
 
-            let classList = (classRows || []).map(mapClassRow);
+            let classList: ClassInfo[] = [];
+            if (classResult.status === 'fulfilled') {
+                classList = (classResult.value.data || []).map(mapClassRow);
+            } else {
+                console.error("Error fetching classes:", classResult.reason);
+            }
+
             if (classList.length === 0) {
-                await seedDefaultClasses();
-                const { data: re } = await supabase.from('classes').select('*');
-                classList = (re || []).map(mapClassRow);
+                try {
+                    await seedDefaultClasses();
+                    const { data: re } = await supabase.from('classes').select('*');
+                    classList = (re || []).map(mapClassRow);
+                } catch (e) {
+                    console.error("Error seeding default classes:", e);
+                }
             }
             setClasses(sortClasses(classList));
-            setUsers((userRows || []).map(mapUserRow));
-            setAnnouncements((annRows || []).map(mapAnnouncementRow));
-            setAnnouncementsTotal(count || 0);
+
+            if (userResult.status === 'fulfilled') {
+                setUsers((userResult.value.data || []).map(mapUserRow));
+            } else {
+                console.error("Error fetching users:", userResult.reason);
+            }
+
+            if (annResult.status === 'fulfilled') {
+                const { data: annRows, count } = annResult.value;
+                setAnnouncements((annRows || []).map(mapAnnouncementRow));
+                setAnnouncementsTotal(count || 0);
+            } else {
+                console.error("Error fetching announcements:", annResult.reason);
+            }
         } catch (error) {
             console.error("Error fetching initial data:", error);
             addToast("Không thể tải dữ liệu.", "error");
@@ -481,25 +520,10 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         return;
     }
     try {
-        const changes: any[] = [];
+        const changes: { mealType: MealType; oldValue: number; newValue: number }[] = [];
 
-        // STALE_DATA check
-        if (originals.length > 0) {
-            for (const original of originals) {
-                const { data } = await supabase
-                    .from('registrations')
-                    .select('updated_at')
-                    .eq('id', original.id)
-                    .maybeSingle();
-                if (!data) continue;
-                const serverTime = new Date(data.updated_at).toISOString();
-                const clientTime = original.updatedAt ? new Date(original.updatedAt).toISOString() : null;
-                if (clientTime && serverTime !== clientTime) {
-                    throw new Error("STALE_DATA");
-                }
-            }
-        }
-
+        // STALE_DATA check + all writes now happen in a single RPC transaction,
+        // so two users can no longer overwrite each other silently.
         const originalsMap = new Map(originals.map(o => [`${o.date}-${o.mealType}`, o]));
         const updatesMap = new Map(updates.map(u => [`${u.date}-${u.mealType}`, u]));
         const allKeys = new Set([...originals.map(o => `${o.date}-${o.mealType}`), ...updates.map(u => `${u.date}-${u.mealType}`)]);
@@ -536,16 +560,14 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             }
         }
 
-        if (updateRows.length > 0) {
-            const { error } = await supabase.from('registrations').upsert(updateRows, { onConflict: 'id' });
-            if (error) throw error;
-        }
-        if (upsertRows.length > 0) {
-            const { error } = await supabase.from('registrations').upsert(upsertRows, { onConflict: 'class_name,date,meal_type' });
-            if (error) throw error;
-        }
-        if (deleteIds.length > 0) {
-            const { error } = await supabase.from('registrations').delete().in('id', deleteIds);
+        const hasWork = updateRows.length > 0 || upsertRows.length > 0 || deleteIds.length > 0;
+        if (hasWork) {
+            const { error } = await supabase.rpc('save_registrations', {
+                p_updates: updateRows,
+                p_upserts: upsertRows,
+                p_delete_ids: deleteIds,
+                p_originals: originals.map(o => ({ id: o.id, updated_at: o.updatedAt ? new Date(o.updatedAt).toISOString() : null })),
+            });
             if (error) throw error;
         }
 
@@ -554,8 +576,9 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         }
         markRecentlyUpdated(keysToHighlight);
         triggerRefetch();
-    } catch (error: any) {
-        if (error?.message === 'STALE_DATA') {
+    } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        if (msg === 'STALE_DATA' || msg.includes('STALE_DATA')) {
             addToast('Dữ liệu đã bị thay đổi bởi người khác. Thông tin bạn đang chỉnh sửa vẫn được giữ lại — hãy bấm Lưu lại.', 'error');
             throw error;
         } else {
@@ -589,31 +612,55 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         }
     }
 
-    let query = supabase.from('registrations').select('*', { count: 'exact' });
+    // Dedupe identical concurrent requests (per user/session). Key on the exact
+    // filter shape so results are safely interchangeable across callers.
+    const cacheKey = JSON.stringify({
+        u: currentUser?.id,
+        c: effectiveClassNames,
+        d: dates,
+        r: dateRange,
+        l: queryLimit,
+        o: offset,
+        g: getAll,
+        s: skipCount,
+    });
+    const inFlight = registrationRequestCache.get(cacheKey);
+    if (inFlight) return await inFlight;
 
-    if (dateRange && dateRange.from) query = query.gte('date', dateRange.from);
-    if (dateRange && dateRange.to) query = query.lte('date', dateRange.to);
-    if (effectiveClassNames && effectiveClassNames.length > 0) query = query.in('class_name', effectiveClassNames);
-    if (dates && dates.length > 0) query = query.in('date', dates);
+    const run = (async () => {
+        let query = supabase.from('registrations').select('*', { count: 'exact' });
 
-    query = query.order('date', { ascending: false });
+        if (dateRange && dateRange.from) query = query.gte('date', dateRange.from);
+        if (dateRange && dateRange.to) query = query.lte('date', dateRange.to);
+        if (effectiveClassNames && effectiveClassNames.length > 0) query = query.in('class_name', effectiveClassNames);
+        if (dates && dates.length > 0) query = query.in('date', dates);
 
-    if (!getAll && queryLimit) {
-        query = query.range(offset, offset + queryLimit - 1);
+        query = query.order('date', { ascending: false });
+
+        if (!getAll && queryLimit) {
+            query = query.range(offset, offset + queryLimit - 1);
+        }
+
+        const { data, count, error } = await query;
+
+        if (error) {
+            console.error("getRegistrations error:", error);
+            return { registrations: [], totalCount: 0, hasMore: false };
+        }
+
+        const registrations = (data || []).map(mapRegistrationRow);
+        const totalCount = skipCount ? 0 : (count || 0);
+        const hasMore = !getAll && queryLimit ? offset + registrations.length < (count || 0) : false;
+
+        return { registrations, totalCount, hasMore };
+    })();
+
+    registrationRequestCache.set(cacheKey, run);
+    try {
+        return await run;
+    } finally {
+        registrationRequestCache.delete(cacheKey);
     }
-
-    const { data, count, error } = await query;
-
-    if (error) {
-        console.error("getRegistrations error:", error);
-        return { registrations: [], totalCount: 0, hasMore: false };
-    }
-
-    const registrations = (data || []).map(mapRegistrationRow);
-    const totalCount = skipCount ? 0 : (count || 0);
-    const hasMore = !getAll && queryLimit ? offset + registrations.length < (count || 0) : false;
-
-    return { registrations, totalCount, hasMore };
   }, [currentUser]);
 
   const getRegisteredClasses = useCallback(async (date: string): Promise<string[]> => {
@@ -623,7 +670,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         console.error("getRegisteredClasses error:", error);
         return [];
       }
-      return (data || []).map((row: any) => row.class_name);
+      return (data || []).map((row: { class_name: string }) => row.class_name);
     } catch (error) {
       console.error("getRegisteredClasses exception:", error);
       return [];
@@ -812,18 +859,28 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         return false;
     }
     try {
-        await supabase.from('classes').update({ name: trimmedName, student_count: updatedData.studentCount }).eq('id', classId);
+        // Atomic rename across classes/registrations/archived_registrations/profiles.
+        const { error } = await supabase.rpc('rename_class', {
+            p_old_name: oldClass?.name,
+            p_new_name: trimmedName,
+            p_student_count: updatedData.studentCount,
+        });
+        if (error) throw error;
 
-        if (oldClass && oldClass.name !== trimmedName) {
-            await supabase.from('registrations').update({ class_name: trimmedName }).eq('class_name', oldClass.name);
-        }
         await logAction('UPDATE_CLASS', { classId, oldName: oldClass?.name, newName: trimmedName, newStudentCount: updatedData.studentCount });
-        addToast(`Đã cập nhật lớp "${oldClass?.name}".`, 'success');
+        addToast(`Đã cập nhật lớp "${trimmedName}".`, 'success');
         triggerRefetch();
         return true;
     } catch (error) {
-        console.error("Failed to update class", error);
-        addToast("Lỗi khi cập nhật lớp.", "error");
+        const msg = error instanceof Error ? error.message : String(error);
+        if (msg.includes('Tên lớp đã tồn tại')) {
+            addToast(`Tên lớp "${trimmedName}" đã tồn tại.`, 'error');
+        } else if (msg.includes('Không tìm thấy lớp')) {
+            addToast('Không tìm thấy lớp để cập nhật.', 'error');
+        } else {
+            console.error("Failed to update class", error);
+            addToast("Lỗi khi cập nhật lớp.", "error");
+        }
         return false;
     }
   }, [classes, addToast, logAction, canWriteClass, triggerRefetch]);
@@ -836,7 +893,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         await logAction('DELETE_CLASS', { id: classToDelete.id, name: classToDelete.name });
         addToast(`Đã xóa lớp "${classToDelete.name}" và các đăng ký liên quan.`, 'success');
         triggerRefetch();
-    } catch (error: any) {
+    } catch (error) {
         console.error("Failed to delete class", error);
         addToast("Lỗi khi xóa lớp.", "error");
         throw error;
@@ -849,7 +906,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             addToast(`Email "${updatedData.email}" đã tồn tại.`, 'error'); return false;
         }
         try {
-            const payload: Record<string, any> = {};
+            const payload: Partial<Pick<ProfileRow, 'display_name' | 'role' | 'assigned_class'>> = {};
             if (updatedData.displayName !== undefined) payload.display_name = updatedData.displayName;
             if (updatedData.role !== undefined) payload.role = updatedData.role;
             if (updatedData.assignedClass !== undefined) payload.assigned_class = updatedData.assignedClass || null;
@@ -864,8 +921,8 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         }
     }, [users, addToast, logAction, canWriteUser, triggerRefetch]);
 
-    const isMissingRpc = (error: any): boolean => {
-        const msg = String(error?.message || '').toLowerCase();
+    const isMissingRpc = (error: unknown): boolean => {
+        const msg = String(error instanceof Error ? error.message : error).toLowerCase();
         return msg.includes('pgrst202') || msg.includes('does not exist') || msg.includes('could not find the function');
     };
 
@@ -894,7 +951,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         if (!canWriteUser()) { addToast("Bạn không có quyền duyệt tài khoản.", "error"); return false; }
         const user = users.find(u => u.id === userId);
         try {
-            const payload: Record<string, any> = {
+            const payload: Partial<Pick<ProfileRow, 'role' | 'assigned_class'>> = {
                 role,
                 assigned_class: role === Role.GV ? (assignedClass || null) : null,
             };
@@ -965,7 +1022,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     const updateAnnouncement = useCallback(async (id: string, data: Partial<Omit<Announcement, 'id'>>) => {
         if (!canWriteAnnouncement()) { addToast("Bạn không có quyền sửa thông báo.", "error"); return false; }
         try {
-            const payload: Record<string, any> = {};
+            const payload: Partial<Pick<AnnouncementRow, 'title' | 'content'>> = {};
             if (data.title !== undefined) payload.title = data.title;
             if (data.content !== undefined) payload.content = data.content;
             await supabase.from('announcements').update(payload).eq('id', id);
@@ -1099,7 +1156,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             console.error("getArchivedRegistrations error:", error);
             return { registrations: [] };
         }
-        const registrations = (data || []).map(mapRegistrationRow);
+        const registrations = (data || []).map(mapArchivedRegistrationRow);
         return { registrations };
     }, [currentUser]);
     

@@ -22,13 +22,16 @@ const getRoleBadgeClass = (role: Role) => {
 
 const UserManagementPage: React.FC = () => {
     const { classes, users, approveUser, rejectUser, updateUser, deleteUser } = useData();
-    const { isLoading } = useUI();
+    const { isLoading, addToast } = useUI();
 
     const [searchTerm, setSearchTerm] = useState('');
     const [debouncedSearchTerm, setDebouncedSearchTerm] = useState(searchTerm);
     const [editingUser, setEditingUser] = useState<User | null>(null);
     const [deletingUser, setDeletingUser] = useState<User | null>(null);
     const [confirmReject, setConfirmReject] = useState<User | null>(null);
+    const [approvingUser, setApprovingUser] = useState<User | null>(null);
+    const [approveClass, setApproveClass] = useState('');
+    const [approving, setApproving] = useState(false);
 
     const modalRef = useRef<HTMLDivElement>(null);
     const triggerRef = useRef<HTMLElement | null>(null);
@@ -45,7 +48,7 @@ const UserManagementPage: React.FC = () => {
     
     // Accessibility: Focus trap for modals
     useEffect(() => {
-        const isModalOpen = !!editingUser || !!deletingUser || !!confirmReject;
+        const isModalOpen = !!editingUser || !!deletingUser || !!confirmReject || !!approvingUser;
         if (isModalOpen && modalRef.current) {
             triggerRef.current = document.activeElement as HTMLElement;
             // FIX: Replaced generic type argument on `querySelectorAll` with a type assertion to fix the "Untyped function calls may not accept type arguments" error.
@@ -78,7 +81,7 @@ const UserManagementPage: React.FC = () => {
                 triggerRef.current?.focus();
             };
         }
-    }, [editingUser, deletingUser, confirmReject]);
+    }, [editingUser, deletingUser, confirmReject, approvingUser]);
 
     const filteredUsers = useMemo(() =>
         users.filter(u =>
@@ -89,8 +92,16 @@ const UserManagementPage: React.FC = () => {
 
     const pendingUsers = useMemo(() => users.filter(u => u.role === Role.Pending), [users]);
 
+    const openApprove = (user: User) => {
+        setApproveClass('');
+        setApprovingUser(user);
+    };
+
     const handleApprove = async (user: User) => {
-        await approveUser(user.id, Role.GV, '');
+        setApproving(true);
+        await approveUser(user.id, Role.GV, approveClass);
+        setApproving(false);
+        setApprovingUser(null);
     };
 
     const handleUpdateUser = async () => {
@@ -135,6 +146,35 @@ const UserManagementPage: React.FC = () => {
                         <div className="mt-6 flex justify-end space-x-3">
                             <button onClick={() => setDeletingUser(null)} className="px-4 py-2 text-sm font-medium rounded-md text-gray-700 bg-gray-100 hover:bg-gray-200 dark:bg-gray-600 dark:text-gray-200 dark:hover:bg-gray-500">Hủy</button>
                             <button onClick={handleDeleteUser} className="px-4 py-2 text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700">Xóa</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            {approvingUser && (
+                <div className="fixed inset-0 bg-black bg-opacity-60 flex justify-center items-center z-50">
+                    <div ref={modalRef} role="dialog" aria-modal="true" aria-labelledby="approve-user-title" className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-md m-4 modal-content">
+                        <h3 id="approve-user-title" className="text-lg font-bold text-gray-900 dark:text-gray-100">Duyệt tài khoản</h3>
+                        <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">
+                            Xác nhận duyệt tài khoản <span className="font-semibold">{approvingUser.displayName}</span> ({approvingUser.email})?
+                            Sau khi duyệt, tài khoản sẽ có thể đăng nhập với vai trò <span className="font-semibold">Giáo viên</span>.
+                        </p>
+                        <div className="mt-4">
+                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Lớp phụ trách <span className="text-red-600">*</span></label>
+                            <select value={approveClass} onChange={e => setApproveClass(e.target.value)} className="mt-1 block w-full px-3 py-2 bg-white dark:bg-gray-700 dark:text-white border border-gray-300 dark:border-gray-600 rounded-md">
+                                <option value="">-- Chọn lớp --</option>
+                                {classes.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+                            </select>
+                            {!approveClass && <p className="mt-1 text-xs text-red-600 dark:text-red-400">Vui lòng chọn lớp phụ trách trước khi duyệt.</p>}
+                        </div>
+                        <div className="mt-6 flex justify-end space-x-3">
+                            <button onClick={() => setApprovingUser(null)} className="px-4 py-2 text-sm font-medium rounded-md text-gray-700 bg-gray-100 hover:bg-gray-200 dark:bg-gray-600 dark:text-gray-200 dark:hover:bg-gray-500">Hủy</button>
+                            <button
+                                onClick={() => { if (!approveClass) { addToast('Vui lòng chọn lớp phụ trách.', 'error'); return; } handleApprove(approvingUser); }}
+                                disabled={approving || !approveClass}
+                                className="px-4 py-2 text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700 disabled:opacity-50"
+                            >
+                                {approving ? 'Đang duyệt...' : 'Xác nhận duyệt'}
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -257,7 +297,7 @@ const UserManagementPage: React.FC = () => {
                                             <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-4">
                                                 {user.role === Role.Pending ? (
                                                     <>
-                                                        <button onClick={() => handleApprove(user)} disabled={isLoading} className="text-green-600 hover:text-green-800 dark:text-green-400 dark:hover:text-green-300 disabled:opacity-50">Duyệt</button>
+                                                        <button onClick={() => openApprove(user)} disabled={isLoading} className="text-green-600 hover:text-green-800 dark:text-green-400 dark:hover:text-green-300 disabled:opacity-50">Duyệt</button>
                                                         <button onClick={() => setConfirmReject(user)} disabled={isLoading} className="text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-300 disabled:opacity-50">Từ chối</button>
                                                     </>
                                                 ) : (

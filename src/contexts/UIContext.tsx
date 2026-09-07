@@ -1,4 +1,4 @@
-import React, { createContext, useState, useCallback, useContext, ReactNode, useMemo, useRef } from 'react';
+import React, { createContext, useState, useCallback, useContext, ReactNode, useMemo, useRef, useEffect } from 'react';
 import { Toast, Notification } from '../types';
 
 interface UIContextType {
@@ -18,21 +18,29 @@ export const UIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [activeRequests, setActiveRequests] = useState(0);
   const isLoading = activeRequests > 0;
   const nextId = useRef(0);
+  const timersRef = useRef<number[]>([]);
+
+  useEffect(() => {
+    return () => {
+      timersRef.current.forEach(timer => clearTimeout(timer));
+      timersRef.current = [];
+    };
+  }, []);
 
   const addToast = useCallback((message: string, type: 'success' | 'error') => {
     const id = ++nextId.current;
     setToasts(prevToasts => [...prevToasts, { id, message, type }]);
-    setTimeout(() => {
+    timersRef.current.push(window.setTimeout(() => {
       setToasts(prevToasts => prevToasts.filter(toast => toast.id !== id));
-    }, 5000);
+    }, 5000));
   }, []);
 
   const addNotification = useCallback((message: string) => {
     const id = ++nextId.current;
     setNotifications(prev => [...prev, { id, message }]);
-    setTimeout(() => {
+    timersRef.current.push(window.setTimeout(() => {
         setNotifications(prev => prev.filter(n => n.id !== id));
-    }, 4000);
+    }, 4000));
   }, []);
 
   const setIsLoading = useCallback((loading: boolean) => {

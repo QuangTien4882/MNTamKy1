@@ -193,6 +193,14 @@ const ListPage: React.FC<{ setView: (view: View) => void }> = ({ setView }) => {
         setCurrentPage(1);
     }, [selectedClasses]);
 
+    useEffect(() => {
+        // New data arrived (save by anyone) -> jump back to the first page so the
+        // user never rests alone on a page that no longer exists.
+        if (!isInitialLoad) {
+            setCurrentPage(1);
+        }
+    }, [dataVersion, isInitialLoad]);
+
   if (isLoadingData) {
     return <TableSkeleton />;
   }

@@ -131,6 +131,9 @@ const SummaryPage: React.FC<{setView: (view: View) => void}> = ({setView}) => {
   const [originalRegistrationsForEdit, setOriginalRegistrationsForEdit] = useState<MealRegistration[] | null>(null);
 
   const observer = useRef<IntersectionObserver | null>(null);
+  // Monotonic id: only the latest filter/data request may apply its result.
+  const listRequestIdRef = useRef(0);
+  const totalsRequestIdRef = useRef(0);
 
   const isReadOnly = currentUser?.role === Role.BGH || currentUser?.role === Role.KT_CD;
 
@@ -175,6 +178,7 @@ const SummaryPage: React.FC<{setView: (view: View) => void}> = ({setView}) => {
   }, [isLoading, isFetchingMore, hasMore, fetchMoreRegistrations]);
 
   useEffect(() => {
+    const requestId = ++totalsRequestIdRef.current;
     const fetchTotals = async () => {
         if (!selectedClasses.length || !classes.length) {
             setReportTotals(null);
@@ -186,6 +190,7 @@ const SummaryPage: React.FC<{setView: (view: View) => void}> = ({setView}) => {
             classNames: selectedClasses,
             getAll: true
         });
+        if (requestId !== totalsRequestIdRef.current) return;
 
         const totals = allRegs.reduce((acc, reg) => {
             acc[reg.mealType] = (acc[reg.mealType] || 0) + reg.count;
@@ -203,6 +208,7 @@ const SummaryPage: React.FC<{setView: (view: View) => void}> = ({setView}) => {
 
 
   useEffect(() => {
+    const requestId = ++listRequestIdRef.current;
     // This effect handles fetching data when filters change.
     setRegistrations([]);
     setOffset(0);
@@ -219,15 +225,19 @@ const SummaryPage: React.FC<{setView: (view: View) => void}> = ({setView}) => {
             offset: 0,
             skipCount: false
         }).then(({ registrations: newRegistrations, totalCount, hasMore: newHasMore }) => {
+            if (requestId !== listRequestIdRef.current) return;
             setRegistrations(newRegistrations);
             setTotalRecords(totalCount);
             setOffset(newRegistrations.length);
             setHasMore(newHasMore);
         }).catch((error) => {
+            if (requestId !== listRequestIdRef.current) return;
             console.error("Failed to fetch registrations", error);
             addToast("Không thể tải dữ liệu.", "error");
         }).finally(() => {
-            setIsLoading(false);
+            if (requestId === listRequestIdRef.current) {
+                setIsLoading(false);
+            }
         });
     } else if (classes.length > 0 && selectedClasses.length === 0) {
         setRegistrations([]);

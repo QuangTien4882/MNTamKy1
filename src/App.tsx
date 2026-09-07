@@ -168,9 +168,17 @@ const AppContent: React.FC = () => {
             >
               {ICONS[navItem]}
               <span className={isMobile ? 'text-xs' : ''}>{NAV_ITEMS[navItem]}</span>
-              {hasBadge && (
-                <span className={`absolute ${isMobile ? 'top-1 right-[calc(50%-1.25rem)]' : 'top-1 right-1'} h-3 w-3 rounded-full bg-red-500 border-2 ${isMobile ? 'border-white dark:border-gray-800' : 'border-teal-600'}`}></span>
-              )}
+{hasBadge && (
+            isMobile ? (
+              <span className="absolute top-0.5 right-[calc(50%-1.5rem)] min-w-4 h-4 px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center border-2 border-white dark:border-gray-800">
+                {unreadAnnouncementsCount > 9 ? '9+' : unreadAnnouncementsCount}
+              </span>
+            ) : (
+              <span className="absolute top-0.5 right-0.5 min-w-4 h-4 px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center border-2 border-teal-600">
+                {unreadAnnouncementsCount > 9 ? '9+' : unreadAnnouncementsCount}
+              </span>
+            )
+          )}
             </button>
           )
         })}

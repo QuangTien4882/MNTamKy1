@@ -1,5 +1,6 @@
-import React, { createContext, useState, useEffect, useCallback, useContext, ReactNode, useMemo } from 'react';
+import React, { createContext, useState, useEffect, useCallback, useContext, ReactNode, useMemo, useRef } from 'react';
 import { User, Role } from '../types';
+import type { ProfileRow } from '../database.types';
 import { supabase } from '../supabaseClient';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 
@@ -16,11 +17,11 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const mapProfile = (profile: any): User => ({
+const mapProfile = (profile: ProfileRow): User => ({
   id: profile.id,
   email: profile.email || '',
-  displayName: profile.display_name,
-  role: profile.role,
+  displayName: profile.display_name || '',
+  role: profile.role as Role,
   assignedClass: profile.assigned_class || undefined,
 });
 
@@ -28,6 +29,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [approvalPending, setApprovalPending] = useState(false);
+  // Set when this provider itself signs a pending user out, so the subsequent
+  // SIGNED_OUT event keeps the "waiting for approval" flag visible.
+  const pendingBlockRef = useRef(false);
 
   const loadProfile = useCallback(async (userId: string): Promise<User | null> => {
     const { data, error } = await supabase
@@ -49,26 +53,41 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     const { data: authListener } = supabase.auth.onAuthStateChange(async (_event, session) => {
       const user = session?.user ?? null;
+      const eventUserId = user?.id ?? null;
 
       if (user) {
         const profile = await loadProfile(user.id);
-        if (profile) {
-          if (profile.role === Role.Pending) {
-            // Registered but not yet approved by Admin -> block entry
-            setApprovalPending(true);
-            await supabase.auth.signOut();
-            setCurrentUser(null);
-          } else {
-            setApprovalPending(false);
-            setCurrentUser(profile);
-          }
-        } else {
+        // Race guard: only apply this event if the session still matches the one
+        // that triggered it. Prevents a ghost login/session after a fast sign-out.
+        const { data: { user: latest } } = await supabase.auth.getUser();
+        if ((latest?.id ?? null) !== eventUserId) {
+          return;
+        }
+        if (!profile) {
           console.error('User profile not found in profiles for ID:', user.id);
+          pendingBlockRef.current = false;
           await supabase.auth.signOut();
           setCurrentUser(null);
+          setApprovalPending(false);
+        } else if (profile.role === Role.Pending) {
+          // Registered but not yet approved by Admin -> block entry
+          pendingBlockRef.current = true;
+          setApprovalPending(true);
+          await supabase.auth.signOut();
+          setCurrentUser(null);
+        } else {
+          pendingBlockRef.current = false;
+          setApprovalPending(false);
+          setCurrentUser(profile);
         }
       } else {
+        // Any signed-out event clears the session. Keep the approval flag only when
+        // the sign-out came from our own pending block above.
         setCurrentUser(null);
+        if (!pendingBlockRef.current) {
+          setApprovalPending(false);
+        }
+        pendingBlockRef.current = false;
       }
       setAuthLoading(false);
     });
@@ -123,19 +142,22 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       // Supabase has "Confirm email" enabled, which would send a confirmation link.
       // Per product rules sign-in must NOT depend on email confirmation — only Admin
       // approval gates access. Throw a marker the login page renders clearly.
-      const e: any = new Error('EMAIL_CONFIRMATION_REQUIRED');
-      e.code = 'EMAIL_CONFIRMATION_REQUIRED';
+      const e = new Error('EMAIL_CONFIRMATION_REQUIRED');
+      (e as Error & { code: string }).code = 'EMAIL_CONFIRMATION_REQUIRED';
       throw e;
     }
 
     // Email confirmation is disabled -> a session was returned. The auth listener will
     // detect the 'Chưa duyệt' role, sign the user out and block until Admin approves.
     // Flag it here too for immediate feedback.
+    pendingBlockRef.current = true;
     setApprovalPending(true);
     await supabase.auth.signOut();
   }, []);
 
   const signOutUser = useCallback(async () => {
+    pendingBlockRef.current = false;
+    setApprovalPending(false);
     const { error } = await supabase.auth.signOut();
     if (error) throw error;
   }, []);

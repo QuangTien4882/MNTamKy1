@@ -311,6 +311,9 @@ create policy "admin_write_archived" on public.archived_registrations
 -- Performance indexes (matters as the user base grows)
 -- ============================================
 create index if not exists idx_registrations_date_class on public.registrations (date desc, class_name);
+create index if not exists idx_registrations_class on public.registrations (class_name);
+create index if not exists idx_archived_date_class on public.archived_registrations (date desc, class_name);
+create index if not exists idx_archived_class on public.archived_registrations (class_name);
 create index if not exists idx_audit_logs_timestamp on public.audit_logs (timestamp desc);
 create index if not exists idx_announcements_created_at on public.announcements (created_at desc);
 
@@ -395,4 +398,163 @@ as $$
   group by r.class_name;
 $$;
 
+revoke execute on function public.get_registered_classes(date) from public;
 grant execute on function public.get_registered_classes(date) to authenticated;
+
+-- ============================================
+-- RPC: Atomic save of an edit session (staleness check + writes in ONE transaction)
+-- Prevents two users overwriting each other and avoids partial writes.
+-- p_updates:   [{id, count, registered_by_id, registered_by}]  -> existing rows
+-- p_upserts:   [{class_name, date, meal_type, count, registered_by_id, registered_by}]
+-- p_delete_ids: uuid[]                                         -> existing rows to delete
+-- p_originals: [{id, updated_at}]                              -> version check; NULL = skip check
+-- Raises 'STALE_DATA' if any row changed since the client fetched it.
+-- ============================================
+create or replace function public.save_registrations(
+  p_updates jsonb,
+  p_upserts jsonb,
+  p_delete_ids uuid[],
+  p_originals jsonb
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_role text := public.current_user_role();
+  v_class text := public.current_user_assigned_class();
+  v_id uuid;
+  v_upd timestamptz;
+  v_client timestamptz;
+  v_now timestamptz := now();
+  v_class_name text;
+  v_date date;
+  v_meal text;
+  v_count integer;
+  v_rid uuid;
+  v_rname text;
+begin
+  -- Permission: Admin / KT_CD any class; GV only own class.
+  if v_role not in ('Admin', 'KT & CD', 'Giáo viên') then
+    raise exception 'Bạn không có quyền cập nhật đăng ký.' using errcode = '42501';
+  end if;
+
+  if v_role = 'Giáo viên' then
+    if exists (
+      select 1
+      from jsonb_to_recordset(coalesce(p_upserts, '[]'::jsonb)) as u(class_name text)
+      where u.class_name is distinct from v_class
+    ) then
+      raise exception 'Bạn chỉ được chỉnh sửa suất ăn cho lớp được phân công.' using errcode = '42501';
+    end if;
+    if exists (
+      select 1
+      from public.registrations r
+      where ((r.id = any(coalesce(p_delete_ids, '{}'::uuid[])))
+          or (r.id in (select (x.value ->> 'id')::uuid from jsonb_array_elements(coalesce(p_updates, '[]'::jsonb)) x)))
+        and r.class_name is distinct from v_class
+    ) then
+      raise exception 'Bạn chỉ được chỉnh sửa suất ăn cho lớp được phân công.' using errcode = '42501';
+    end if;
+  end if;
+
+  -- STALE_DATA check under row locks.
+  for v_id in
+    select (x.value ->> 'id')::uuid
+    from jsonb_array_elements(coalesce(p_originals, '[]'::jsonb)) x
+  loop
+    select r.updated_at into v_upd
+    from public.registrations r
+    where r.id = v_id
+    for update;
+    if not found then
+      raise exception 'STALE_DATA' using errcode = 'P0001';
+    end if;
+    select (x.value ->> 'updated_at')::timestamptz into v_client
+    from jsonb_array_elements(coalesce(p_originals, '[]'::jsonb)) x
+    where (x.value ->> 'id')::uuid = v_id;
+    if v_client is not null and v_upd is distinct from v_client then
+      raise exception 'STALE_DATA' using errcode = 'P0001';
+    end if;
+  end loop;
+
+  -- Upserts (rows created or re-created during the edit).
+  for v_class_name, v_date, v_meal, v_count, v_rid, v_rname in
+    select u.class_name, u.date, u.meal_type, u.count, u.registered_by_id, u.registered_by
+    from jsonb_to_recordset(coalesce(p_upserts, '[]'::jsonb))
+      as u(class_name text, date date, meal_type text, count integer,
+           registered_by_id uuid, registered_by text)
+  loop
+    insert into public.registrations (class_name, date, meal_type, count, registered_by_id, registered_by, updated_at)
+    values (v_class_name, v_date, v_meal, v_count, v_rid, v_rname, v_now)
+    on conflict (class_name, date, meal_type) do update
+      set count = excluded.count,
+          registered_by_id = excluded.registered_by_id,
+          registered_by = excluded.registered_by,
+          updated_at = v_now;
+  end loop;
+
+  -- Updates of existing rows.
+  for v_id in
+    select (x.value ->> 'id')::uuid
+    from jsonb_array_elements(coalesce(p_updates, '[]'::jsonb)) x
+  loop
+    update public.registrations r
+    set count = (x.value ->> 'count')::integer,
+        registered_by_id = coalesce((x.value ->> 'registered_by_id')::uuid, r.registered_by_id),
+        registered_by = coalesce((x.value ->> 'registered_by')::text, r.registered_by),
+        updated_at = v_now
+    from jsonb_array_elements(coalesce(p_updates, '[]'::jsonb)) x
+    where r.id = v_id;
+  end loop;
+
+  -- Deletes.
+  if coalesce(array_length(p_delete_ids, 1), 0) > 0 then
+    delete from public.registrations where id = any(p_delete_ids);
+  end if;
+end;
+$$;
+
+revoke execute on function public.save_registrations(jsonb, jsonb, uuid[], jsonb) from public;
+grant execute on function public.save_registrations(jsonb, jsonb, uuid[], jsonb) to authenticated;
+
+-- ============================================
+-- RPC: Rename a class atomically across all tables that reference the name.
+-- Keeps teacher assignments (profiles.assigned_class), live registrations and
+-- archived registrations in sync in a single transaction.
+-- ============================================
+create or replace function public.rename_class(p_old_name text, p_new_name text, p_student_count integer)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not public.is_admin() then
+    raise exception 'Permission denied: admin only' using errcode = '42501';
+  end if;
+  if p_old_name = p_new_name then
+    -- Only the student count changed.
+    update public.classes set student_count = coalesce(p_student_count, student_count) where name = p_old_name;
+    return;
+  end if;
+  if exists (select 1 from public.classes where name = p_new_name) then
+    raise exception 'Tên lớp đã tồn tại.' using errcode = '23505';
+  end if;
+
+  update public.classes
+  set name = p_new_name, student_count = coalesce(p_student_count, student_count)
+  where name = p_old_name;
+  if not found then
+    raise exception 'Không tìm thấy lớp.' using errcode = 'P0002';
+  end if;
+
+  update public.registrations set class_name = p_new_name where class_name = p_old_name;
+  update public.archived_registrations set class_name = p_new_name where class_name = p_old_name;
+  update public.profiles set assigned_class = p_new_name where assigned_class = p_old_name;
+end;
+$$;
+
+revoke execute on function public.rename_class(text, text, integer) from public;
+grant execute on function public.rename_class(text, text, integer) to authenticated;

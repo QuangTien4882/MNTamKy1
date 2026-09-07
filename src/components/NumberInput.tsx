@@ -12,7 +12,10 @@ interface NumberInputProps {
 
 const NumberInput: React.FC<NumberInputProps> = ({ id, value, onChange, min = 0, max, disabled, placeholder }) => {
     const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        onChange(e.target.value);
+        // Force digits-only so negative signs, 'e'/'.' and invalid values can never
+        // reach state (browsers report those as '' or raw '-'/'NaN').
+        const cleaned = e.target.value.replace(/[^0-9]/g, '');
+        onChange(cleaned);
     };
 
     return (
