@@ -10,8 +10,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['icon-192.png', 'icon-512.png', 'apple-touch-icon.png'],
       manifest: {
-        short_name: 'MN 24/3 Meals',
-        name: 'Đăng ký suất ăn - Mầm non 24/3',
+        short_name: 'MN Tam Kỳ 1',
+        name: 'Đăng ký suất ăn - Mầm non Tam Kỳ 1',
         icons: [
           {
             src: 'icon-192.png',
@@ -31,7 +31,7 @@ export default defineConfig({
       },
       workbox: {
         // Cấu hình workbox để cache các tài nguyên
-        globPatterns: ['**/*.{js,css,html,png,svg}'],
+        globPatterns: ['**/*.{js,css,html,png,svg,ttf}'],
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,

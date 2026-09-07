@@ -13,18 +13,19 @@ const getRoleBadgeClass = (role: Role) => {
             return 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200';
         case Role.GV:
             return 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200';
+        case Role.Pending:
+            return 'bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200';
         default:
             return 'bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200';
     }
 };
 
 const UserManagementPage: React.FC = () => {
-    const { classes, users, addUser, updateUser, deleteUser } = useData();
+    const { classes, users, updateUser, deleteUser } = useData();
     const { isLoading } = useUI();
 
     const [searchTerm, setSearchTerm] = useState('');
     const [debouncedSearchTerm, setDebouncedSearchTerm] = useState(searchTerm);
-    const [newUser, setNewUser] = useState<Omit<User, 'id'>>({ email: '', displayName: '', role: Role.GV, assignedClass: '' });
     const [editingUser, setEditingUser] = useState<User | null>(null);
     const [deletingUser, setDeletingUser] = useState<User | null>(null);
 
@@ -84,18 +85,6 @@ const UserManagementPage: React.FC = () => {
             u.email.toLowerCase().includes(debouncedSearchTerm.toLowerCase())
         ).sort((a,b) => a.displayName.localeCompare(b.displayName)),
         [users, debouncedSearchTerm]);
-
-    const handleAddUser = async (e: React.FormEvent) => {
-        e.preventDefault();
-        let userToAdd = { ...newUser };
-        if (userToAdd.role !== Role.GV) {
-            userToAdd.assignedClass = '';
-        }
-        const success = await addUser(userToAdd);
-        if (success) {
-            setNewUser({ email: '', displayName: '', role: Role.GV, assignedClass: '' });
-        }
-    };
 
     const handleUpdateUser = async () => {
         if (!editingUser) return;
@@ -185,85 +174,14 @@ const UserManagementPage: React.FC = () => {
             </div>
 
             <div className="space-y-6">
-                <details className="p-4 bg-gray-50 dark:bg-gray-800/50 border dark:border-gray-700 rounded-lg group">
-                    <summary className="font-medium text-gray-800 dark:text-gray-200 cursor-pointer list-none flex justify-between items-center">
-                        Hướng dẫn sửa lỗi User UID khi thêm người dùng mới
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 transition-transform duration-200 group-open:rotate-180" viewBox="0 0 20 20" fill="currentColor">
-                            <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
-                        </svg>
-                    </summary>
-                    <div className="mt-4 text-sm text-gray-600 dark:text-gray-300 space-y-4 prose prose-sm dark:prose-invert max-w-none">
-                        <p>Khi một người dùng mới được tạo trong Firebase Authentication nhưng không thể đăng nhập vào ứng dụng, nguyên nhân thường là do <strong>User UID</strong> trong <strong>Authentication</strong> không khớp với <strong>Document ID</strong> trong <strong>Firestore</strong>. Dưới đây là cách khắc phục:</p>
-                        <ol className="list-decimal pl-5 space-y-2">
-                            <li>
-                                <strong>Bước 1: Tìm và sao chép User UID chính xác</strong>
-                                <ul className="list-disc pl-5 mt-1">
-                                    <li>Truy cập Firebase Console và chọn dự án của bạn.</li>
-                                    <li>Ở menu bên trái, vào mục <strong>Authentication</strong>.</li>
-                                    <li>Trong tab <strong>Users</strong>, tìm đến tài khoản người dùng mới mà bạn đã tạo (dựa vào email).</li>
-                                    <li>Ở cột <strong>User UID</strong>, hãy sao chép (copy) toàn bộ chuỗi ký tự đó.</li>
-                                </ul>
-                            </li>
-                            <li>
-                                <strong>Bước 2: Sửa lại Document trong Firestore</strong>
-                                <ul className="list-disc pl-5 mt-1">
-                                    <li>Vẫn trong Firebase Console, ở menu bên trái, vào mục <strong>Firestore Database</strong>.</li>
-                                    <li>Chọn collection <strong>users</strong>.</li>
-                                    <li><strong>Tìm và xóa Document sai:</strong> Tìm đến document của người dùng đang bị lỗi (bạn có thể nhận ra nó qua trường email). Document ID của nó sẽ là một chuỗi ký tự ngẫu nhiên. Hãy nhấn vào dấu ba chấm (...) ở cuối hàng và chọn <strong>Delete document</strong>.</li>
-                                    <li><strong>Tạo lại Document đúng:</strong>
-                                        <ul className="list-disc pl-5 mt-1">
-                                            <li>Nhấn vào nút <strong>+ Add document</strong>.</li>
-                                            <li className="font-bold text-red-500">BƯỚC QUAN TRỌNG NHẤT: Trong ô <strong>Document ID</strong>, hãy dán (paste) giá trị User UID mà bạn đã sao chép ở Bước 1. Tuyệt đối không để trống để Firebase tự tạo ID.</li>
-                                            <li>Bây giờ, hãy thêm lại các trường (fields) cho người dùng đó:
-                                                <ul className="list-disc pl-5 mt-1 font-mono text-xs">
-                                                    <li><strong>email</strong> (string): email của người dùng</li>
-                                                    <li><strong>displayName</strong> (string): Tên hiển thị</li>
-                                                    <li><strong>role</strong> (string): Vai trò (ví dụ: Giáo viên)</li>
-                                                    <li><strong>assignedClass</strong> (string): Lớp phụ trách (nếu là giáo viên)</li>
-                                                </ul>
-                                            </li>
-                                            <li>Nhấn <strong>Save</strong>.</li>
-                                        </ul>
-                                    </li>
-                                </ul>
-                            </li>
-                             <li>
-                                <strong>Bước 3: Kiểm tra lại</strong>
-                                <p className="mt-1">Bây giờ, hãy yêu cầu người dùng đăng nhập lại. Lỗi sẽ biến mất.</p>
-                            </li>
-                        </ol>
-                    </div>
-                </details>
-
-                <form onSubmit={handleAddUser} className="p-4 border border-dashed border-gray-300 dark:border-gray-600 rounded-lg space-y-4">
-                    <h3 className="font-medium text-lg text-gray-800 dark:text-gray-200">Thêm người dùng mới</h3>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Tên hiển thị <span className="text-red-500">*</span></label>
-                            <input required type="text" value={newUser.displayName} onChange={e => setNewUser({...newUser, displayName: e.target.value})} className="mt-1 block w-full px-3 py-2 bg-white dark:bg-gray-700 dark:text-white border border-gray-300 dark:border-gray-600 rounded-md" />
-                        </div>
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Email <span className="text-red-500">*</span></label>
-                            <input required type="email" value={newUser.email} onChange={e => setNewUser({...newUser, email: e.target.value})} className="mt-1 block w-full px-3 py-2 bg-white dark:bg-gray-700 dark:text-white border border-gray-300 dark:border-gray-600 rounded-md" />
-                        </div>
-                         <div>
-                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Vai trò <span className="text-red-500">*</span></label>
-                            <select value={newUser.role} onChange={e => handleRoleChange(e.target.value as Role, setNewUser)} className="mt-1 block w-full px-3 py-2 bg-white dark:bg-gray-700 dark:text-white border border-gray-300 dark:border-gray-600 rounded-md">
-                                {Object.values(Role).map(role => <option key={role} value={role}>{role}</option>)}
-                            </select>
-                        </div>
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Lớp phụ trách (cho Giáo viên)</label>
-                            <select disabled={newUser.role !== Role.GV} value={newUser.assignedClass} onChange={e => setNewUser({...newUser, assignedClass: e.target.value})} className="mt-1 block w-full px-3 py-2 bg-white dark:bg-gray-700 dark:text-white border border-gray-300 dark:border-gray-600 rounded-md disabled:bg-gray-100 dark:disabled:bg-gray-600">
-                                <option value="">Không có</option>
-                                {classes.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
-                            </select>
-                        </div>
-                    </div>
-                    <button type="submit" className="w-full sm:w-auto flex-shrink-0 justify-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-teal-600 hover:bg-teal-700">
-                        Thêm người dùng
-                    </button>
-                </form>
+                <div className="p-4 bg-teal-50 dark:bg-gray-800/50 border dark:border-teal-600/30 rounded-lg text-sm text-gray-700 dark:text-gray-300">
+                    <p>
+                        Người dùng <strong>tự đăng ký</strong> ngay trên trang đăng nhập (tab <strong>"Đăng ký"</strong>).
+                        Tài khoản mới có vai trò <strong>"Chưa duyệt"</strong> và bị chặn đăng nhập cho đến khi quản trị viên duyệt.
+                        Duyệt tài khoản, chọn vai trò và phân công lớp tại tab <strong>"Duyệt tài khoản"</strong>.
+                    </p>
+                    <p className="mt-2">Tại đây chỉ còn chức năng <strong>chỉnh sửa/đổi vai trò</strong> và <strong>xóa</strong> người dùng hiện có.</p>
+                </div>
 
                 <div>
                     <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100 mb-4">Danh sách người dùng ({users.length})</h3>

@@ -7,7 +7,6 @@ import CustomDatePicker from './CustomDatePicker';
 import ClassFilterDropdown from './ClassFilterDropdown';
 import SummaryTableRow from './SummaryTableRow';
 import SummaryCard from './SummaryCard';
-import { DocumentData, DocumentSnapshot } from 'firebase/firestore';
 
 const formatDate = (date: Date): string => {
   const year = date.getFullYear();
@@ -117,8 +116,8 @@ const SummaryPage: React.FC<{setView: (view: View) => void}> = ({setView}) => {
   const [isFetchingMore, setIsFetchingMore] = useState(false);
   
   const [totalRecords, setTotalRecords] = useState(0);
-  const [lastDoc, setLastDoc] = useState<DocumentSnapshot<DocumentData> | null>(null);
   const [hasMore, setHasMore] = useState(true);
+  const [offset, setOffset] = useState(0);
   const [sortConfig, setSortConfig] = useState<{ key: string; direction: 'asc' | 'desc' } | null>({ key: 'date', direction: 'desc' });
 
 
@@ -145,23 +144,23 @@ const SummaryPage: React.FC<{setView: (view: View) => void}> = ({setView}) => {
     if (isFetchingMore || !hasMore) return;
     setIsFetchingMore(true);
     try {
-        const { registrations: newRegistrations, lastDoc: newLastDoc } = await getRegistrations({
+        const { registrations: newRegistrations, hasMore: newHasMore } = await getRegistrations({
             dateRange: (dateRange.from && dateRange.to) ? dateRange : undefined,
             classNames: selectedClasses,
             limit: ITEMS_PER_PAGE,
-            lastVisibleDoc: lastDoc,
+            offset,
             skipCount: true
         });
         setRegistrations(prev => [...prev, ...newRegistrations]);
-        setLastDoc(newLastDoc);
-        setHasMore(newRegistrations.length === ITEMS_PER_PAGE);
+        setOffset(offset + newRegistrations.length);
+        setHasMore(newHasMore);
     } catch (error) {
         console.error("Failed to fetch more registrations", error);
         addToast("Không thể tải thêm dữ liệu.", "error");
     } finally {
         setIsFetchingMore(false);
     }
-  }, [isFetchingMore, hasMore, getRegistrations, dateRange, selectedClasses, lastDoc, addToast]);
+  }, [isFetchingMore, hasMore, getRegistrations, dateRange, selectedClasses, offset, addToast]);
 
 
   const loaderRef = useCallback((node: HTMLElement | null) => {
@@ -206,7 +205,7 @@ const SummaryPage: React.FC<{setView: (view: View) => void}> = ({setView}) => {
   useEffect(() => {
     // This effect handles fetching data when filters change.
     setRegistrations([]);
-    setLastDoc(null);
+    setOffset(0);
     setHasMore(true);
     setSelectedRows(new Set());
     setEditingRowKey(null);
@@ -217,13 +216,13 @@ const SummaryPage: React.FC<{setView: (view: View) => void}> = ({setView}) => {
             dateRange: (dateRange.from && dateRange.to) ? dateRange : undefined,
             classNames: selectedClasses,
             limit: ITEMS_PER_PAGE,
-            lastVisibleDoc: null, // Always fetch the first page
+            offset: 0,
             skipCount: false
-        }).then(({ registrations: newRegistrations, lastDoc: newLastDoc, totalCount }) => {
+        }).then(({ registrations: newRegistrations, totalCount, hasMore: newHasMore }) => {
             setRegistrations(newRegistrations);
             setTotalRecords(totalCount);
-            setLastDoc(newLastDoc);
-            setHasMore(newRegistrations.length === ITEMS_PER_PAGE);
+            setOffset(newRegistrations.length);
+            setHasMore(newHasMore);
         }).catch((error) => {
             console.error("Failed to fetch registrations", error);
             addToast("Không thể tải dữ liệu.", "error");

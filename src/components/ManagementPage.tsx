@@ -2,6 +2,7 @@ import React, { useState, lazy, Suspense } from 'react';
 import { ManagementTab, Role } from '../types';
 import SettingsPage from './SettingsPage';
 import UserManagementPage from './UserManagementPage';
+import UserApprovalPage from './UserApprovalPage';
 import AuditLogPage from './AuditLogPage';
 import { useAuth } from '../contexts/AuthContext';
 import { ManagementSkeleton } from './skeletons';
@@ -29,6 +30,9 @@ const ManagementPage: React.FC = () => {
         <div className="bg-white dark:bg-gray-800 p-6 sm:p-8 rounded-xl shadow-lg transition-colors fade-in">
              <div className="border-b border-gray-200 dark:border-gray-700 mb-6">
                   <nav className="-mb-px flex space-x-4 sm:space-x-6 overflow-x-auto flex-nowrap hide-scrollbar" aria-label="Tabs">
+                     {currentUser?.role === Role.Admin && (
+                        <TabButton tab={ManagementTab.Approval} label="Duyệt tài khoản" />
+                     )}
                      <TabButton tab={ManagementTab.Classes} label="Lớp học" />
                      <TabButton tab={ManagementTab.Users} label="Người dùng" />
                      {currentUser?.role === Role.Admin && (
@@ -40,6 +44,7 @@ const ManagementPage: React.FC = () => {
                   </nav>
             </div>
             
+            {activeTab === ManagementTab.Approval && currentUser?.role === Role.Admin && <UserApprovalPage />}
             {activeTab === ManagementTab.Classes && <SettingsPage />}
             {activeTab === ManagementTab.Users && <UserManagementPage />}
             {activeTab === ManagementTab.AuditLogs && currentUser?.role === Role.Admin && <AuditLogPage />}

@@ -1,7 +1,7 @@
 import React, { createContext, useState, useEffect, useCallback, useContext, ReactNode, useMemo } from 'react';
 import { MealRegistration, ClassInfo, User, Role, Announcement, AuditLog, AuditLogAction, MealType } from '../types';
-import { getDb } from '../firebaseConfig';
-import { collection, onSnapshot, query, where, getDocs, writeBatch, doc, setDoc, deleteDoc, runTransaction, DocumentData, QueryConstraint, updateDoc, serverTimestamp, Timestamp, getCountFromServer, orderBy, limit, startAfter, DocumentSnapshot, addDoc, arrayUnion } from 'firebase/firestore';
+import { supabase } from '../supabaseClient';
+import type { RealtimeChannel } from '@supabase/supabase-js';
 import { useAuth } from './AuthContext';
 import { useUI } from './UIContext';
 
@@ -25,30 +25,32 @@ interface DataContextType {
   addClass: (newClass: Omit<ClassInfo, 'id' | 'updatedAt'>) => Promise<boolean>;
   updateClass: (classId: string, updatedData: Omit<ClassInfo, 'id' | 'updatedAt'>) => Promise<boolean>;
   deleteClass: (classToDelete: ClassInfo) => Promise<void>;
-  getRegistrations: (options: { 
-    dates?: string[], 
-    classNames?: string[], 
+  getRegistrations: (options: {
+    dates?: string[],
+    classNames?: string[],
     dateRange?: {from: string, to: string},
     limit?: number,
-    lastVisibleDoc?: DocumentSnapshot<DocumentData> | null,
-    getAll?: boolean, 
-    skipCount?: boolean 
+    offset?: number,
+    getAll?: boolean,
+    skipCount?: boolean
   }) => Promise<{
     registrations: MealRegistration[],
-    lastDoc: DocumentSnapshot<DocumentData> | null,
-    totalCount: number
+    totalCount: number,
+    hasMore: boolean
   }>;
-  addUser: (newUser: Omit<User, 'id'>) => Promise<boolean>;
   updateUser: (userId: string, updatedData: Partial<Omit<User, 'id'>>) => Promise<boolean>;
   deleteUser: (userId: string) => Promise<void>;
+  approveUser: (userId: string, role: Role, assignedClass: string) => Promise<boolean>;
+  rejectUser: (userId: string) => Promise<boolean>;
+  refreshUsers: () => Promise<void>;
   addAnnouncement: (data: Omit<Announcement, 'id' | 'createdAt' | 'createdBy' | 'createdById' | 'readBy'>) => Promise<boolean>;
   updateAnnouncement: (id: string, data: Partial<Omit<Announcement, 'id'>>) => Promise<boolean>;
   deleteAnnouncement: (id: string) => Promise<void>;
   markAnnouncementsAsRead: (announcementIds: string[]) => Promise<void>;
   getAuditLogs: (options: {
     limit: number,
-    lastVisibleDoc?: DocumentSnapshot<DocumentData> | null,
-  }) => Promise<{ logs: AuditLog[], lastDoc: DocumentSnapshot<DocumentData> | null }>;
+    offset?: number,
+  }) => Promise<{ logs: AuditLog[], hasMore: boolean }>;
   deleteAuditLogs: (logIds: string[]) => Promise<void>;
   exportData: (options: { format: 'csv' | 'pdf', dateRange: { from: string, to: string }, classNames: string[] }) => Promise<void>;
   dismissBackupPrompt: () => void;
@@ -95,8 +97,57 @@ const sortClasses = (classes: ClassInfo[]): ClassInfo[] => {
     });
 };
 
+const toIso = (value: any): string | undefined => {
+    if (!value) return undefined;
+    return new Date(value).toISOString();
+};
+
+const mapClassRow = (row: any): ClassInfo => ({
+    id: String(row.id),
+    name: row.name,
+    studentCount: row.student_count,
+    updatedAt: toIso(row.updated_at),
+});
+
+const mapUserRow = (row: any): User => ({
+    id: row.id,
+    email: row.email || '',
+    displayName: row.display_name,
+    role: row.role,
+    assignedClass: row.assigned_class || undefined,
+});
+
+const mapRegistrationRow = (row: any): MealRegistration => ({
+    id: row.id,
+    className: row.class_name,
+    date: row.date,
+    mealType: row.meal_type,
+    count: row.count,
+    updatedAt: toIso(row.updated_at),
+    registeredBy: row.registered_by || undefined,
+    registeredById: row.registered_by_id || undefined,
+});
+
+const mapAnnouncementRow = (row: any): Announcement => ({
+    id: row.id,
+    title: row.title,
+    content: row.content,
+    createdAt: toIso(row.created_at) || '',
+    createdBy: row.created_by || '',
+    createdById: row.created_by_id || '',
+    readBy: row.read_by || [],
+});
+
+const mapAuditLogRow = (row: any): AuditLog => ({
+    id: row.id,
+    timestamp: toIso(row.timestamp) || '',
+    userId: row.user_id || '',
+    userName: row.user_name || '',
+    action: row.action,
+    details: row.details || {},
+});
+
 export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const db = getDb();
   const { currentUser } = useAuth();
   const { addToast, setIsLoading } = useUI();
 
@@ -105,7 +156,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [users, setUsers] = useState<User[]>([]);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [dataVersion, setDataVersion] = useState(0);
-  const [recentlyUpdatedKeys] = useState(new Set<string>());
+  const [recentlyUpdatedKeys, setRecentlyUpdatedKeys] = useState<Set<string>>(new Set());
   const [showBackupPrompt, setShowBackupPrompt] = useState(false);
   
   // Local state for announcement read status, acting as a client-side cache
@@ -118,32 +169,62 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             const item = localStorage.getItem(`readAnnouncements_${currentUser.id}`);
             setLocallyReadIds(item ? new Set(JSON.parse(item)) : new Set());
         } catch {
-            // In case of parsing error, start with an empty set
             setLocallyReadIds(new Set());
         }
     } else {
-        // Clear local cache on logout
         setLocallyReadIds(new Set());
     }
   }, [currentUser]);
 
+  // Highlight updated keys for a short time after any registration change
+  const markRecentlyUpdated = useCallback((keys: string[]) => {
+    setRecentlyUpdatedKeys(prev => {
+        const next = new Set(prev);
+        keys.forEach(k => next.add(k));
+        next.forEach(k => {
+            window.setTimeout(() => {
+                setRecentlyUpdatedKeys(cur => {
+                    const n = new Set(cur);
+                    n.delete(k);
+                    return n;
+                });
+            }, 4000);
+        });
+        return next;
+    });
+  }, []);
 
   const triggerRefetch = () => setDataVersion(v => v + 1);
 
    const logAction = useCallback(async (action: AuditLogAction, details: Record<string, any>) => {
     if (!currentUser) return;
     try {
-        await addDoc(collection(db, 'audit_logs'), {
+        await supabase.from('audit_logs').insert({
             action,
             details,
-            userId: currentUser.id,
-            userName: currentUser.displayName,
-            timestamp: serverTimestamp(),
+            user_id: currentUser.id,
+            user_name: currentUser.displayName,
         });
     } catch (error) {
         console.error("Failed to write to audit log:", error);
     }
-  }, [currentUser, db]);
+  }, [currentUser]);
+
+  // ---- Client-side permission guards (server enforces the real rules via RLS) ----
+  const isAdmin = currentUser?.role === Role.Admin;
+  const isBGH = currentUser?.role === Role.BGH;
+
+  const canWriteRegistrations = (className?: string): boolean => {
+    if (!currentUser) return false;
+    if (currentUser.role === Role.Admin || currentUser.role === Role.KT_CD) return true;
+    if (currentUser.role === Role.GV) return !className || currentUser.assignedClass === className;
+    return false;
+  };
+
+  const canWriteClass = (): boolean => isAdmin;
+  const canWriteUser = (): boolean => isAdmin;
+  const canWriteAnnouncement = (): boolean => isAdmin || isBGH;
+  const canArchive = (): boolean => isAdmin;
   
   const checkForBackupPrompt = useCallback(() => {
     if (currentUser?.role !== Role.Admin) return;
@@ -194,199 +275,242 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   }, []);
   
-    // Centralized function to check read status from both server data and local cache.
     const isAnnouncementRead = useCallback((ann: Announcement): boolean => {
-        if (!currentUser) return true; // Default to read if no user
-        // An announcement is considered read if the user's ID is in the server's `readBy` array OR in our local cache.
+        if (!currentUser) return true;
         return ann.readBy.includes(currentUser.id) || locallyReadIds.has(ann.id);
     }, [currentUser, locallyReadIds]);
 
-
   const unreadAnnouncementsCount = useMemo(() => {
     if (!currentUser) return 0;
-    // Recalculate unread count using the reliable isAnnouncementRead function
     return announcements.filter(a => !isAnnouncementRead(a)).length;
   }, [announcements, currentUser, isAnnouncementRead]);
 
+  // Seed default classes when table is empty
+  const seedDefaultClasses = useCallback(async () => {
+    const { count, error } = await supabase
+        .from('classes')
+        .select('id', { count: 'exact', head: true });
+    if (error) throw error;
+    if (count === 0) {
+        await supabase.from('classes').insert(DEFAULT_CLASSES.map(c => ({ name: c.name, student_count: c.studentCount })));
+    }
+  }, []);
 
+  // Realtime subscriptions for classes, users, announcements
   useEffect(() => {
     if (!currentUser) {
         setClasses([]);
         setUsers([]);
         setAnnouncements([]);
         return;
+    }
+    setIsLoading(true);
+
+    const channels: RealtimeChannel[] = [];
+
+    const subscribeClasses = () => {
+        const channel = supabase
+            .channel('classes-channel')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'classes' }, async () => {
+                const { data } = await supabase.from('classes').select('*');
+                const rows = (data || []).map(mapClassRow);
+                if (rows.length === 0) {
+                    try { await seedDefaultClasses(); } catch (e) { console.error(e); }
+                }
+                setClasses(sortClasses(rows));
+            })
+            .subscribe();
+        channels.push(channel);
     };
 
-    setIsLoading(true);
-    const classesCollectionRef = collection(db, "classes");
-    const unsubscribeClasses = onSnapshot(classesCollectionRef,
-      async (snapshot) => {
-        if (snapshot.empty) {
-          console.log("No classes found. Populating with default classes.");
-          const batch = writeBatch(db);
-          DEFAULT_CLASSES.forEach(classData => {
-            const newClassRef = doc(classesCollectionRef);
-            batch.set(newClassRef, {...classData, updatedAt: serverTimestamp()});
-          });
-          await batch.commit();
-        } else {
-          const classesData = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as ClassInfo));
-          setClasses(sortClasses(classesData));
-        }
-        setIsLoading(false);
-      },
-      (error) => {
-        console.error("Error fetching classes:", error);
-        addToast("Không thể tải danh sách lớp.", "error");
-        setIsLoading(false);
-      }
-    );
-    
-    let unsubscribeUsers = () => {};
-    if (currentUser.role === Role.Admin || currentUser.role === Role.BGH) {
-        const usersCollectionRef = collection(db, "users");
-        unsubscribeUsers = onSnapshot(usersCollectionRef,
-          (snapshot) => {
-            const usersData = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as User));
-            setUsers(usersData);
-          },
-          (error) => {
-            console.error("Error fetching users:", error);
-            addToast("Không thể tải danh sách người dùng.", "error");
-          }
-        );
-    }
-    
-    const announcementsQuery = query(collection(db, 'announcements'), orderBy('createdAt', 'desc'));
-    const unsubscribeAnnouncements = onSnapshot(announcementsQuery, (snapshot) => {
-        const announcementData = snapshot.docs.map(d => ({ ...d.data(), id: d.id } as Announcement));
-        setAnnouncements(announcementData);
-    }, (error) => {
-        console.error("Error fetching announcements:", error);
-        addToast("Không thể tải thông báo.", "error");
-    });
+    const fetchAll = async () => {
+        try {
+            const [{ data: classRows }, { data: userRows }, { data: annRows }] = await Promise.all([
+                supabase.from('classes').select('*'),
+                supabase.from('profiles').select('*'),
+                supabase.from('announcements').select('*').order('created_at', { ascending: false }),
+            ]);
 
+            let classList = (classRows || []).map(mapClassRow);
+            if (classList.length === 0) {
+                await seedDefaultClasses();
+                const { data: re } = await supabase.from('classes').select('*');
+                classList = (re || []).map(mapClassRow);
+            }
+            setClasses(sortClasses(classList));
+            setUsers((userRows || []).map(mapUserRow));
+            setAnnouncements((annRows || []).map(mapAnnouncementRow));
+        } catch (error) {
+            console.error("Error fetching initial data:", error);
+            addToast("Không thể tải dữ liệu.", "error");
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    fetchAll();
+    subscribeClasses();
+
+    const userChannel = supabase
+        .channel('users-channel')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, async () => {
+            const { data } = await supabase.from('profiles').select('*');
+            setUsers((data || []).map(mapUserRow));
+        })
+        .subscribe();
+    channels.push(userChannel);
+
+    const announcementChannel = supabase
+        .channel('announcements-channel')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'announcements' }, async () => {
+            const { data } = await supabase.from('announcements').select('*').order('created_at', { ascending: false });
+            setAnnouncements((data || []).map(mapAnnouncementRow));
+        })
+        .subscribe();
+    channels.push(announcementChannel);
 
     return () => {
-      unsubscribeClasses();
-      unsubscribeUsers();
-      unsubscribeAnnouncements();
+        channels.forEach(ch => supabase.removeChannel(ch));
     };
-  }, [addToast, currentUser, db, setIsLoading]);
+  }, [currentUser, addToast, setIsLoading, seedDefaultClasses]);
 
   const addRegistrations = useCallback(async (newRegistrations: Omit<MealRegistration, 'id' | 'updatedAt'>[]) => {
     if (!currentUser) {
         addToast("Lỗi: Không tìm thấy thông tin người dùng.", "error");
         return;
     }
+    if (!newRegistrations.every(r => canWriteRegistrations(r.className))) {
+        addToast("Bạn chỉ được đăng ký suất ăn cho lớp được phân công.", "error");
+        return;
+    }
     setIsLoading(true);
     try {
-      const batch = writeBatch(db);
       const userInfo = {
-          registeredById: currentUser.id,
-          registeredBy: currentUser.displayName
+          registered_by_id: currentUser.id,
+          registered_by: currentUser.displayName
       };
-      
-      for (const newReg of newRegistrations) {
-        const q = query(
-          collection(db, 'registrations'),
-          where('date', '==', newReg.date),
-          where('className', '==', newReg.className),
-          where('mealType', '==', newReg.mealType)
-        );
-        
-        const querySnapshot = await getDocs(q);
 
-        if (!querySnapshot.empty) {
-          querySnapshot.forEach(docSnap => {
-            if (newReg.count > 0) {
-              batch.update(docSnap.ref, { count: newReg.count, updatedAt: serverTimestamp(), ...userInfo });
-            } else {
-              batch.delete(docSnap.ref);
-            }
-          });
-        } else if (newReg.count > 0) {
-          const newDocRef = doc(collection(db, 'registrations'));
-          batch.set(newDocRef, { ...newReg, updatedAt: serverTimestamp(), ...userInfo });
-        }
+      const toUpsert = newRegistrations
+          .filter(r => r.count > 0)
+          .map(r => ({ class_name: r.className, date: r.date, meal_type: r.mealType, count: r.count, ...userInfo }));
+      const toDelete = newRegistrations.filter(r => r.count <= 0);
+
+      if (toUpsert.length > 0) {
+        const { error } = await supabase.from('registrations').upsert(
+          toUpsert,
+          { onConflict: 'class_name,date,meal_type' }
+        );
+        if (error) throw error;
       }
-      
-      await batch.commit();
+
+      for (const del of toDelete) {
+        const { error } = await supabase.from('registrations')
+          .delete()
+          .eq('class_name', del.className)
+          .eq('date', del.date)
+          .eq('meal_type', del.mealType);
+        if (error) throw error;
+      }
+
       await logAction('CREATE_REGISTRATION', { registrations: newRegistrations.filter(r => r.count > 0) });
+      markRecentlyUpdated(newRegistrations.map(r => `${r.date}-${r.className}`));
       triggerRefetch();
+      addToast(`Đã lưu đăng ký ${newRegistrations.length} mục.`, 'success');
     } catch (error) {
       console.error("Failed to save registrations", error);
       addToast("Lỗi khi lưu đăng ký.", "error");
     } finally {
       setIsLoading(false);
     }
-  }, [addToast, currentUser, db, logAction, setIsLoading]);
+  }, [addToast, currentUser, logAction, markRecentlyUpdated, setIsLoading]);
 
   const updateRegistrations = useCallback(async (updates: Omit<MealRegistration, 'id' | 'updatedAt'>[], originals: MealRegistration[]) => {
     if (!currentUser) {
         addToast("Lỗi: Không tìm thấy thông tin người dùng.", "error");
         return;
     }
+    if (!updates.every(u => canWriteRegistrations(u.className))) {
+        addToast("Bạn chỉ được chỉnh sửa suất ăn cho lớp được phân công.", "error");
+        return;
+    }
     setIsLoading(true);
     try {
         const changes: any[] = [];
-        await runTransaction(db, async (transaction) => {
-            if (originals.length > 0) {
-                const originalDocs = new Map(originals.map(o => [o.id, o]));
-                const docRefs = originals.map(o => doc(db, 'registrations', o.id));
-                const serverDocs = await Promise.all(docRefs.map(ref => transaction.get(ref)));
 
-                for (let i = 0; i < serverDocs.length; i++) {
-                    const serverDoc = serverDocs[i];
-                    if (!serverDoc.exists()) continue;
-                    const clientDoc = originalDocs.get(serverDoc.id);
-                    const serverTimestamp = (serverDoc.data()?.updatedAt as Timestamp | undefined)?.toMillis();
-                    const clientTimestamp = clientDoc?.updatedAt?.toMillis();
-                    
-                    if (serverTimestamp !== clientTimestamp) {
-                        throw new Error("STALE_DATA");
-                    }
+        // STALE_DATA check
+        if (originals.length > 0) {
+            for (const original of originals) {
+                const { data } = await supabase
+                    .from('registrations')
+                    .select('updated_at')
+                    .eq('id', original.id)
+                    .maybeSingle();
+                if (!data) continue;
+                const serverTime = new Date(data.updated_at).toISOString();
+                const clientTime = original.updatedAt ? new Date(original.updatedAt).toISOString() : null;
+                if (clientTime && serverTime !== clientTime) {
+                    throw new Error("STALE_DATA");
                 }
             }
+        }
+
+        const originalsMap = new Map(originals.map(o => [`${o.date}-${o.mealType}`, o]));
+        const updatesMap = new Map(updates.map(u => [`${u.date}-${u.mealType}`, u]));
+        const allKeys = new Set([...originals.map(o => `${o.date}-${o.mealType}`), ...updates.map(u => `${u.date}-${u.mealType}`)]);
+        const currentUserInfo = { registered_by_id: currentUser.id, registered_by: currentUser.displayName };
+
+        const keysToHighlight: string[] = [];
+        const updateRows: { id: string; count: number; registered_by_id: string; registered_by: string }[] = [];
+        const upsertRows: { class_name: string; date: string; meal_type: string; count: number; registered_by_id: string; registered_by: string }[] = [];
+        const deleteIds: string[] = [];
+
+        for (const key of allKeys) {
+            const original = originalsMap.get(key);
+            const update = updatesMap.get(key);
             
-            const originalsMap = new Map(originals.map(o => [`${o.date}-${o.mealType}`, o]));
-            const updatesMap = new Map(updates.map(u => [`${u.date}-${u.mealType}`, u]));
-            const allKeys = new Set([...originals.map(o => `${o.date}-${o.mealType}`), ...updates.map(u => `${u.date}-${u.mealType}`)]);
-            const currentUserInfo = { registeredById: currentUser.id, registeredBy: currentUser.displayName };
+            const originalCount = original?.count ?? 0;
+            const newCount = update?.count ?? 0;
 
-            allKeys.forEach(key => {
-                const original = originalsMap.get(key);
-                const update = updatesMap.get(key);
-                
-                const originalCount = original?.count ?? 0;
-                const newCount = update?.count ?? 0;
-
-                if (original) {
-                    if (newCount > 0) {
-                        if (newCount !== originalCount) {
-                            changes.push({ mealType: original.mealType, oldValue: originalCount, newValue: newCount });
-                            transaction.update(doc(db, 'registrations', original.id), { count: newCount, updatedAt: serverTimestamp(), ...currentUserInfo });
-                        }
-                    } else {
-                        changes.push({ mealType: original.mealType, oldValue: originalCount, newValue: 0 });
-                        transaction.delete(doc(db, 'registrations', original.id));
+            if (original) {
+                if (newCount > 0) {
+                    if (newCount !== originalCount) {
+                        changes.push({ mealType: original.mealType, oldValue: originalCount, newValue: newCount });
+                        updateRows.push({ id: original.id, count: newCount, ...currentUserInfo });
+                        keysToHighlight.push(`${original.date}-${original.className}`);
                     }
                 } else {
-                    if (newCount > 0) {
-                        changes.push({ mealType: update!.mealType, oldValue: 0, newValue: newCount });
-                        const newDocRef = doc(collection(db, 'registrations'));
-                        transaction.set(newDocRef, { ...(update as Omit<MealRegistration, 'id'>), updatedAt: serverTimestamp(), ...currentUserInfo });
-                    }
+                    changes.push({ mealType: original.mealType, oldValue: originalCount, newValue: 0 });
+                    deleteIds.push(original.id);
+                    keysToHighlight.push(`${original.date}-${original.className}`);
                 }
-            });
-        });
+            } else if (update && newCount > 0) {
+                changes.push({ mealType: update.mealType, oldValue: 0, newValue: newCount });
+                upsertRows.push({ class_name: update.className, date: update.date, meal_type: update.mealType, count: newCount, ...currentUserInfo });
+                keysToHighlight.push(`${update.date}-${update.className}`);
+            }
+        }
+
+        if (updateRows.length > 0) {
+            const { error } = await supabase.from('registrations').upsert(updateRows, { onConflict: 'id' });
+            if (error) throw error;
+        }
+        if (upsertRows.length > 0) {
+            const { error } = await supabase.from('registrations').upsert(upsertRows, { onConflict: 'class_name,date,meal_type' });
+            if (error) throw error;
+        }
+        if (deleteIds.length > 0) {
+            const { error } = await supabase.from('registrations').delete().in('id', deleteIds);
+            if (error) throw error;
+        }
+
         if (changes.length > 0) {
             await logAction('UPDATE_REGISTRATION', { className: updates[0]?.className, date: updates[0]?.date, changes });
         }
+        markRecentlyUpdated(keysToHighlight);
         triggerRefetch();
     } catch (error: any) {
         setIsLoading(false);
-        if (error.message === 'STALE_DATA') {
+        if (error?.message === 'STALE_DATA') {
             addToast('Dữ liệu đã bị thay đổi bởi người khác. Vui lòng tải lại.', 'error');
             throw error;
         } else {
@@ -396,56 +520,55 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } finally {
         setIsLoading(false);
     }
-  }, [addToast, currentUser, db, logAction, setIsLoading]);
+  }, [addToast, currentUser, logAction, markRecentlyUpdated, setIsLoading]);
 
-  const getRegistrations = useCallback(async (options: { 
-    dates?: string[], 
-    classNames?: string[], 
+  const getRegistrations = useCallback(async (options: {
+    dates?: string[],
+    classNames?: string[],
     dateRange?: { from: string, to: string },
     limit?: number,
-    lastVisibleDoc?: DocumentSnapshot<DocumentData> | null,
+    offset?: number,
     getAll?: boolean,
     skipCount?: boolean
-   }): Promise<{
+  }): Promise<{
     registrations: MealRegistration[],
-    lastDoc: DocumentSnapshot<DocumentData> | null,
-    totalCount: number
+    totalCount: number,
+    hasMore: boolean
   }> => {
-    const { dates, classNames, dateRange, limit: queryLimit, lastVisibleDoc, getAll = false, skipCount = false } = options;
-    const constraints: QueryConstraint[] = [];
-    
-    if (dateRange && dateRange.from) constraints.push(where('date', '>=', dateRange.from));
-    if (dateRange && dateRange.to) constraints.push(where('date', '<=', dateRange.to));
-    if (classNames && classNames.length > 0) constraints.push(where('className', 'in', classNames));
-    if (dates && dates.length > 0) constraints.push(where('date', 'in', dates));
+    const { dates, classNames, dateRange, limit: queryLimit, offset = 0, getAll = false, skipCount = false } = options;
 
-    const baseQuery = query(collection(db, 'registrations'), ...constraints);
+    let query = supabase.from('registrations').select('*', { count: 'exact' });
 
-    let totalCount = 0;
-    if (!skipCount) {
-        const countSnapshot = await getCountFromServer(baseQuery);
-        totalCount = countSnapshot.data().count;
+    if (dateRange && dateRange.from) query = query.gte('date', dateRange.from);
+    if (dateRange && dateRange.to) query = query.lte('date', dateRange.to);
+    if (classNames && classNames.length > 0) query = query.in('class_name', classNames);
+    if (dates && dates.length > 0) query = query.in('date', dates);
+
+    query = query.order('date', { ascending: false });
+
+    if (!getAll && queryLimit) {
+        query = query.range(offset, offset + queryLimit - 1);
     }
 
-    const mainQueryConstraints: QueryConstraint[] = [orderBy('date', 'desc')];
-    if (!getAll && queryLimit) mainQueryConstraints.push(limit(queryLimit));
-    if (!getAll && lastVisibleDoc) mainQueryConstraints.push(startAfter(lastVisibleDoc));
+    const { data, count, error } = await query;
 
-    const finalQuery = query(baseQuery, ...mainQueryConstraints);
-    const snapshot = await getDocs(finalQuery);
+    if (error) {
+        console.error("getRegistrations error:", error);
+        return { registrations: [], totalCount: 0, hasMore: false };
+    }
 
-    const registrations = snapshot.docs.map(doc => ({...doc.data(), id: doc.id } as MealRegistration));
-    const lastDoc = snapshot.docs.length > 0 ? snapshot.docs[snapshot.docs.length - 1] : null;
-    
-    return { registrations, lastDoc, totalCount };
-  }, [db]);
+    const registrations = (data || []).map(mapRegistrationRow);
+    const totalCount = skipCount ? 0 : (count || 0);
+    const hasMore = !getAll && queryLimit ? offset + registrations.length < (count || 0) : false;
+
+    return { registrations, totalCount, hasMore };
+  }, []);
   
   const exportData = useCallback(async (options: { format: 'csv' | 'pdf', dateRange: { from: string, to: string }, classNames: string[] }) => {
         const { format, dateRange, classNames } = options;
         addToast('Đang chuẩn bị file... Quá trình này có thể mất vài giây.', 'success');
         setIsLoading(true);
 
-        // FIX: Define a type for the aggregated data to avoid using 'any' and fix type errors.
         interface ExportableRow {
             date: string;
             className: string;
@@ -459,7 +582,6 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 getAll: true
             });
 
-            // FIX: Explicitly type the accumulator for the `reduce` function to ensure `dataByDateAndClass` has the correct type.
             const dataByDateAndClass = allRegistrations.reduce((acc: Record<string, ExportableRow>, reg) => {
                 const key = `${reg.date}-${reg.className}`;
                 if (!acc[key]) {
@@ -472,10 +594,8 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 return acc;
             }, {} as Record<string, ExportableRow>);
             
-            // FIX: Explicitly type sort parameters to fix "Property 'date'/'className' does not exist on type 'unknown'" error.
             const exportableData = Object.values(dataByDateAndClass).sort((a: ExportableRow, b: ExportableRow) => b.date.localeCompare(a.date) || a.className.localeCompare(b.className));
             
-            // FIX: Explicitly type reduce parameters to resolve type errors.
             const totals = exportableData.reduce((acc, item: ExportableRow) => {
                 acc[MealType.KidsBreakfast] = (acc[MealType.KidsBreakfast] || 0) + (item.meals[MealType.KidsBreakfast]?.count || 0);
                 acc[MealType.KidsLunch] = (acc[MealType.KidsLunch] || 0) + (item.meals[MealType.KidsLunch]?.count || 0);
@@ -492,7 +612,6 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 const headers = ["Lớp", "Ngày", MealType.KidsBreakfast, "Người ĐK", MealType.KidsLunch, "Người ĐK", MealType.TeachersLunch, "Người ĐK", "Tổng cộng"];
                 let csvContent = "\uFEFF" + headers.map(h => `"${h}"`).join(separator) + '\r\n';
 
-                // FIX: Explicitly type forEach parameter to resolve type errors.
                 exportableData.forEach((item: ExportableRow) => {
                     const rowTotal = Object.values(item.meals).reduce((sum, meal) => sum + (meal?.count || 0), 0);
                     const row = [
@@ -521,12 +640,10 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
                 ]);
                 
                 const doc = new jsPDF();
-                // This font supports Vietnamese characters
-                doc.addFont('https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.7/fonts/Roboto/Roboto-Regular.ttf', 'Roboto', 'normal');
+                doc.addFont('/fonts/Roboto-Regular.ttf', 'Roboto', 'normal');
                 doc.setFont('Roboto');
 
                 const head = [['Lớp', 'Ngày', MealType.KidsBreakfast, MealType.KidsLunch, MealType.TeachersLunch]];
-                // FIX: Explicitly type map parameter to resolve type errors.
                 const body = exportableData.map((item: ExportableRow) => {
                     const kbc = `${item.meals[MealType.KidsBreakfast]?.count || 0} (${item.meals[MealType.KidsBreakfast]?.registeredBy || 'N/A'})`;
                     const klc = `${item.meals[MealType.KidsLunch]?.count || 0} (${item.meals[MealType.KidsLunch]?.registeredBy || 'N/A'})`;
@@ -562,39 +679,42 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   }, []);
 
   const deleteRegistrations = useCallback(async (className: string, date: string) => {
+    if (!canWriteRegistrations(className)) {
+        addToast("Bạn không có quyền xóa đăng ký này.", "error");
+        return;
+    }
     setIsLoading(true);
     try {
-        const q = query(collection(db, 'registrations'), where('className', '==', className), where('date', '==', date));
-        const snapshot = await getDocs(q);
-        if (!snapshot.empty) {
-            const batch = writeBatch(db);
-            snapshot.forEach(doc => batch.delete(doc.ref));
-            await batch.commit();
-            await logAction('DELETE_REGISTRATION', { className, date });
-            addToast(`Đã xóa đăng ký của lớp ${className} ngày ${new Date(date + 'T00:00:00').toLocaleDateString('vi-VN')}.`, 'success');
-            triggerRefetch();
-        }
+        const { error } = await supabase.from('registrations')
+            .delete()
+            .eq('class_name', className)
+            .eq('date', date);
+        if (error) throw error;
+        await logAction('DELETE_REGISTRATION', { className, date });
+        addToast(`Đã xóa đăng ký của lớp ${className} ngày ${new Date(date + 'T00:00:00').toLocaleDateString('vi-VN')}.`, 'success');
+        triggerRefetch();
     } catch (error) {
         console.error("Failed to delete registrations", error);
         addToast("Lỗi khi xóa đăng ký.", "error");
     } finally {
         setIsLoading(false);
     }
-  }, [addToast, db, logAction, setIsLoading]);
+  }, [addToast, logAction, setIsLoading]);
 
   const deleteMultipleRegistrationsByDate = useCallback(async (items: {className: string, date: string}[]) => {
     if (items.length === 0) return;
+    if (!items.every(i => canWriteRegistrations(i.className))) {
+        addToast("Bạn không có quyền xóa đăng ký của các lớp này.", "error");
+        return;
+    }
     setIsLoading(true);
     try {
-        const batch = writeBatch(db);
         for (const item of items) {
-             const q = query(collection(db, 'registrations'), where('className', '==', item.className), where('date', '==', item.date));
-             const snapshot = await getDocs(q);
-             if (!snapshot.empty) {
-                 snapshot.forEach(doc => batch.delete(doc.ref));
-             }
+            await supabase.from('registrations')
+                .delete()
+                .eq('class_name', item.className)
+                .eq('date', item.date);
         }
-        await batch.commit();
         await logAction('DELETE_REGISTRATION', { items });
         addToast(`Đã xóa thành công ${items.length} mục.`, 'success');
         triggerRefetch();
@@ -604,9 +724,10 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } finally {
         setIsLoading(false);
     }
-  }, [addToast, db, logAction, setIsLoading]);
+  }, [addToast, logAction, setIsLoading]);
 
   const addClass = useCallback(async (newClassData: Omit<ClassInfo, 'id' | 'updatedAt'>): Promise<boolean> => {
+    if (!canWriteClass()) { addToast("Bạn không có quyền thêm lớp.", "error"); return false; }
     const trimmedName = newClassData.name.trim();
     if (classes.some(c => c.name.toLowerCase() === trimmedName.toLowerCase()) || !trimmedName) {
         addToast(`Lớp "${trimmedName}" đã tồn tại hoặc tên lớp không hợp lệ.`, 'error');
@@ -614,8 +735,8 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
     setIsLoading(true);
     try {
-        const newDocRef = doc(collection(db, 'classes'));
-        await setDoc(newDocRef, { ...newClassData, name: trimmedName, updatedAt: serverTimestamp() });
+        const { error } = await supabase.from('classes').insert({ name: trimmedName, student_count: newClassData.studentCount });
+        if (error) throw error;
         await logAction('CREATE_CLASS', { name: trimmedName, studentCount: newClassData.studentCount });
         addToast(`Đã thêm lớp "${trimmedName}".`, 'success');
         return true;
@@ -626,9 +747,10 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } finally {
         setIsLoading(false);
     }
-  }, [classes, addToast, db, logAction, setIsLoading]);
+  }, [classes, addToast, logAction, setIsLoading]);
 
   const updateClass = useCallback(async (classId: string, updatedData: Omit<ClassInfo, 'id' | 'updatedAt'>): Promise<boolean> => {
+     if (!canWriteClass()) { addToast("Bạn không có quyền chỉnh sửa lớp.", "error"); return false; }
      const trimmedName = updatedData.name.trim();
      const oldClass = classes.find(c => c.id === classId);
      if (!trimmedName || (classes.some(c => c.name.toLowerCase() === trimmedName.toLowerCase() && c.id !== classId))) {
@@ -637,17 +759,10 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
     setIsLoading(true);
     try {
-        const classDocRef = doc(db, 'classes', classId);
-        await updateDoc(classDocRef, {...updatedData, updatedAt: serverTimestamp()});
+        await supabase.from('classes').update({ name: trimmedName, student_count: updatedData.studentCount }).eq('id', classId);
 
         if (oldClass && oldClass.name !== trimmedName) {
-            const regsQuery = query(collection(db, "registrations"), where("className", "==", oldClass.name));
-            const regsSnapshot = await getDocs(regsQuery);
-            if(!regsSnapshot.empty) {
-                const batch = writeBatch(db);
-                regsSnapshot.forEach(docSnap => { batch.update(docSnap.ref, { className: trimmedName }); });
-                await batch.commit();
-            }
+            await supabase.from('registrations').update({ class_name: trimmedName }).eq('class_name', oldClass.name);
         }
         await logAction('UPDATE_CLASS', { classId, oldName: oldClass?.name, newName: trimmedName, newStudentCount: updatedData.studentCount });
         addToast(`Đã cập nhật lớp "${oldClass?.name}".`, 'success');
@@ -660,25 +775,15 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } finally {
         setIsLoading(false);
     }
-  }, [classes, addToast, db, logAction, setIsLoading]);
+  }, [classes, addToast, logAction, setIsLoading]);
 
   const deleteClass = useCallback(async (classToDelete: ClassInfo) => {
+    if (!canWriteClass()) { addToast("Bạn không có quyền xóa lớp.", "error"); return; }
     setIsLoading(true);
     try {
-        const classDocRef = doc(db, 'classes', classToDelete.id);
-        const batch = writeBatch(db);
-
-        batch.delete(classDocRef);
-
-        const regsQuery = query(collection(db, 'registrations'), where('className', '==', classToDelete.name));
-        const regsSnapshot = await getDocs(regsQuery);
-        if (!regsSnapshot.empty) {
-            regsSnapshot.forEach(docSnap => batch.delete(docSnap.ref));
-        }
-        
-        await batch.commit();
-
-        await logAction('DELETE_CLASS', { classId: classToDelete.id, name: classToDelete.name });
+        await supabase.from('registrations').delete().eq('class_name', classToDelete.name);
+        await supabase.from('classes').delete().eq('id', classToDelete.id);
+        await logAction('DELETE_CLASS', { id: classToDelete.id, name: classToDelete.name });
         addToast(`Đã xóa lớp "${classToDelete.name}" và các đăng ký liên quan.`, 'success');
         triggerRefetch();
     } catch (error: any) {
@@ -688,97 +793,147 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     } finally {
         setIsLoading(false);
     }
-  }, [addToast, db, logAction, setIsLoading]);
-
-    const addUser = useCallback(async (newUserData: Omit<User, 'id'>): Promise<boolean> => {
-        if (users.some(u => u.email.toLowerCase() === newUserData.email.toLowerCase())) {
-            addToast(`Email "${newUserData.email}" đã tồn tại.`, 'error'); return false;
-        }
-        setIsLoading(true);
-        try {
-            // NOTE: This will not create the user in Firebase Auth.
-            // This must be done manually in the Firebase console, then copy the UID here.
-            // Or implement a cloud function to handle user creation.
-            const newDocRef = doc(collection(db, 'users'));
-            await setDoc(newDocRef, newUserData);
-            await logAction('CREATE_USER', { email: newUserData.email, displayName: newUserData.displayName, role: newUserData.role });
-            addToast(`Đã thêm người dùng "${newUserData.displayName}". Hướng dẫn sửa UID nếu cần.`, 'success');
-            return true;
-        } catch (error) {
-            console.error("Failed to add user", error); addToast("Lỗi khi thêm người dùng.", "error"); return false;
-        } finally { setIsLoading(false); }
-    }, [users, addToast, db, logAction, setIsLoading]);
+  }, [addToast, logAction, setIsLoading]);
 
     const updateUser = useCallback(async (userId: string, updatedData: Partial<Omit<User, 'id'>>): Promise<boolean> => {
+        if (!canWriteUser()) { addToast("Bạn không có quyền chỉnh sửa người dùng.", "error"); return false; }
         if (updatedData.email && users.some(u => u.email.toLowerCase() === updatedData.email!.toLowerCase() && u.id !== userId)) {
             addToast(`Email "${updatedData.email}" đã tồn tại.`, 'error'); return false;
         }
         setIsLoading(true);
         try {
-            const userDocRef = doc(db, 'users', userId);
-            await updateDoc(userDocRef, updatedData);
+            const payload: Record<string, any> = {};
+            if (updatedData.displayName !== undefined) payload.display_name = updatedData.displayName;
+            if (updatedData.role !== undefined) payload.role = updatedData.role;
+            if (updatedData.assignedClass !== undefined) payload.assigned_class = updatedData.assignedClass || null;
+
+            await supabase.from('profiles').update(payload).eq('id', userId);
             await logAction('UPDATE_USER', { userId, ...updatedData });
             addToast(`Đã cập nhật thông tin người dùng.`, 'success');
+            triggerRefetch();
             return true;
         } catch (error) {
             console.error("Failed to update user", error); addToast("Lỗi khi cập nhật người dùng.", "error"); return false;
         } finally { setIsLoading(false); }
-    }, [users, addToast, db, logAction, setIsLoading]);
+    }, [users, addToast, logAction, setIsLoading]);
 
     const deleteUser = useCallback(async (userId: string) => {
+        if (!canWriteUser()) { addToast("Bạn không có quyền xóa người dùng.", "error"); return; }
         setIsLoading(true);
         const userToDelete = users.find(u => u.id === userId);
         try {
-            await deleteDoc(doc(db, 'users', userId));
+            // Attempt full removal via RPC; fall back to removing just the profile.
+            const { error } = await supabase.rpc('delete_user', { p_user_id: userId });
+            if (error) {
+                await supabase.from('profiles').delete().eq('id', userId);
+            }
             await logAction('DELETE_USER', { userId, email: userToDelete?.email });
             addToast(`Đã xóa người dùng.`, 'success');
+            triggerRefetch();
         } catch (error) {
             console.error("Failed to delete user", error); addToast("Lỗi khi xóa người dùng.", "error");
         } finally { setIsLoading(false); }
-    }, [addToast, db, logAction, users, setIsLoading]);
+    }, [addToast, logAction, users, setIsLoading]);
+
+    const approveUser = useCallback(async (userId: string, role: Role, assignedClass: string): Promise<boolean> => {
+        if (!canWriteUser()) { addToast("Bạn không có quyền duyệt tài khoản.", "error"); return false; }
+        setIsLoading(true);
+        const user = users.find(u => u.id === userId);
+        try {
+            const payload: Record<string, any> = {
+                role,
+                assigned_class: role === Role.GV ? (assignedClass || null) : null,
+            };
+            const { error } = await supabase.from('profiles').update(payload).eq('id', userId);
+            if (error) throw error;
+            await logAction('UPDATE_USER', { userId, email: user?.email, role, assignedClass });
+            addToast(`Đã duyệt tài khoản "${user?.displayName || userId}".`, 'success');
+            triggerRefetch();
+            return true;
+        } catch (error) {
+            console.error("Failed to approve user", error);
+            addToast("Lỗi khi duyệt tài khoản.", "error");
+            return false;
+        } finally { setIsLoading(false); }
+    }, [addToast, logAction, users, setIsLoading]);
+
+    const rejectUser = useCallback(async (userId: string): Promise<boolean> => {
+        if (!canWriteUser()) { addToast("Bạn không có quyền từ chối tài khoản.", "error"); return false; }
+        setIsLoading(true);
+        const user = users.find(u => u.id === userId);
+        try {
+            const { error } = await supabase.rpc('delete_user', { p_user_id: userId });
+            if (error) {
+                await supabase.from('profiles').delete().eq('id', userId);
+            }
+            await logAction('DELETE_USER', { userId, email: user?.email, reason: 'REJECTED' });
+            addToast(`Đã từ chối tài khoản "${user?.displayName || userId}".`, 'success');
+            triggerRefetch();
+            return true;
+        } catch (error) {
+            console.error("Failed to reject user", error);
+            addToast("Lỗi khi từ chối tài khoản.", "error");
+            return false;
+        } finally { setIsLoading(false); }
+    }, [addToast, logAction, users, setIsLoading]);
+    
+    const refreshUsers = useCallback(async () => {
+        try {
+            const { data } = await supabase.from('profiles').select('*');
+            setUsers((data || []).map(mapUserRow));
+        } catch (error) {
+            console.error("Failed to refresh users", error);
+        }
+    }, []);
     
     const addAnnouncement = useCallback(async (data: Omit<Announcement, 'id' | 'createdAt' | 'createdBy' | 'createdById' | 'readBy'>) => {
+        if (!canWriteAnnouncement()) { addToast("Bạn không có quyền đăng thông báo.", "error"); return false; }
         if (!currentUser) return false;
         setIsLoading(true);
         try {
-            const newDocRef = doc(collection(db, 'announcements'));
-            await setDoc(newDocRef, {
-                ...data,
-                createdAt: serverTimestamp(),
-                createdBy: currentUser.displayName,
-                createdById: currentUser.id,
-                readBy: [currentUser.id]
+            const { error } = await supabase.from('announcements').insert({
+                title: data.title,
+                content: data.content,
+                created_by: currentUser.displayName,
+                created_by_id: currentUser.id,
+                read_by: [currentUser.id]
             });
+            if (error) throw error;
             await logAction('CREATE_ANNOUNCEMENT', { title: data.title });
             addToast('Đã đăng thông báo mới.', 'success');
             return true;
         } catch (error) {
             console.error("Failed to add announcement:", error); addToast('Lỗi khi đăng thông báo.', 'error'); return false;
         } finally { setIsLoading(false); }
-    }, [currentUser, db, addToast, logAction, setIsLoading]);
+    }, [currentUser, addToast, logAction, setIsLoading]);
 
     const updateAnnouncement = useCallback(async (id: string, data: Partial<Omit<Announcement, 'id'>>) => {
+        if (!canWriteAnnouncement()) { addToast("Bạn không có quyền sửa thông báo.", "error"); return false; }
         setIsLoading(true);
         try {
-            await updateDoc(doc(db, 'announcements', id), data);
+            const payload: Record<string, any> = {};
+            if (data.title !== undefined) payload.title = data.title;
+            if (data.content !== undefined) payload.content = data.content;
+            await supabase.from('announcements').update(payload).eq('id', id);
             await logAction('UPDATE_ANNOUNCEMENT', { announcementId: id, newTitle: data.title });
             addToast('Đã cập nhật thông báo.', 'success');
             return true;
         } catch(error) {
             console.error("Failed to update announcement:", error); addToast('Lỗi khi cập nhật.', 'error'); return false;
         } finally { setIsLoading(false); }
-    }, [db, addToast, logAction, setIsLoading]);
+    }, [addToast, logAction, setIsLoading]);
 
     const deleteAnnouncement = useCallback(async (id: string) => {
+        if (!canWriteAnnouncement()) { addToast("Bạn không có quyền xóa thông báo.", "error"); return; }
         setIsLoading(true);
         try {
-            await deleteDoc(doc(db, 'announcements', id));
+            await supabase.from('announcements').delete().eq('id', id);
             await logAction('DELETE_ANNOUNCEMENT', { announcementId: id });
             addToast('Đã xóa thông báo.', 'success');
         } catch (error) {
             console.error("Failed to delete announcement:", error); addToast('Lỗi khi xóa.', 'error');
         } finally { setIsLoading(false); }
-    }, [db, addToast, logAction, setIsLoading]);
+    }, [addToast, logAction, setIsLoading]);
 
     const markAnnouncementsAsRead = useCallback(async (announcementIds: string[]) => {
         if (!currentUser || announcementIds.length === 0) return;
@@ -794,44 +949,45 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         });
 
         try {
-            const batch = writeBatch(db);
-            announcementIds.forEach(id => {
-                const docRef = doc(db, 'announcements', id);
-                batch.update(docRef, { readBy: arrayUnion(currentUser.id) });
-            });
-            await batch.commit();
+            for (const id of announcementIds) {
+                const { data } = await supabase.from('announcements').select('read_by').eq('id', id).maybeSingle();
+                const current = Array.isArray(data?.read_by) ? data.read_by : [];
+                if (!current.includes(currentUser.id)) {
+                    const next = [...current, currentUser.id];
+                    await supabase.from('announcements').update({ read_by: next }).eq('id', id);
+                }
+            }
         } catch (error) {
             console.warn("Failed to mark announcements as read on server:", error);
         }
-    }, [currentUser, db]);
+    }, [currentUser]);
     
     const getAuditLogs = useCallback(async (options: {
         limit: number,
-        lastVisibleDoc?: DocumentSnapshot<DocumentData> | null,
-    }): Promise<{ logs: AuditLog[], lastDoc: DocumentSnapshot<DocumentData> | null }> => {
-        const { limit: queryLimit, lastVisibleDoc } = options;
-        const constraints: QueryConstraint[] = [orderBy('timestamp', 'desc')];
-        if (queryLimit) constraints.push(limit(queryLimit));
-        if (lastVisibleDoc) constraints.push(startAfter(lastVisibleDoc));
-        
-        const q = query(collection(db, 'audit_logs'), ...constraints);
-        const snapshot = await getDocs(q);
-        
-        const logs = snapshot.docs.map(d => ({ ...d.data(), id: d.id } as AuditLog));
-        const lastDoc = snapshot.docs.length > 0 ? snapshot.docs[snapshot.docs.length - 1] : null;
-        return { logs, lastDoc };
-    }, [db]);
+        offset?: number,
+    }): Promise<{ logs: AuditLog[], hasMore: boolean }> => {
+        const { limit: queryLimit, offset = 0 } = options;
+        const { data, error } = await supabase
+            .from('audit_logs')
+            .select('*', { count: 'exact' })
+            .order('timestamp', { ascending: false })
+            .range(offset, offset + queryLimit - 1);
+
+        if (error) {
+            console.error("getAuditLogs error:", error);
+            return { logs: [], hasMore: false };
+        }
+
+        const logs = (data || []).map(mapAuditLogRow);
+        return { logs, hasMore: logs.length === queryLimit };
+    }, []);
 
     const deleteAuditLogs = useCallback(async (logIds: string[]) => {
         if (logIds.length === 0) return;
+        if (!canWriteUser()) { addToast("Bạn không có quyền xóa lịch sử.", "error"); return; }
         setIsLoading(true);
         try {
-            const batch = writeBatch(db);
-            logIds.forEach(id => {
-                const docRef = doc(db, 'audit_logs', id);
-                batch.delete(docRef);
-            });
-            await batch.commit();
+            await supabase.from('audit_logs').delete().in('id', logIds);
             addToast(`Đã xóa ${logIds.length} mục lịch sử.`, 'success');
         } catch (error) {
             console.error("Failed to delete audit logs", error);
@@ -839,7 +995,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         } finally {
             setIsLoading(false);
         }
-    }, [addToast, db, setIsLoading]);
+    }, [addToast, setIsLoading]);
     
     const sendReminderForMissingClasses = useCallback(async (missingClasses: string[], date: string) => {
         if (!currentUser || (currentUser.role !== Role.Admin && currentUser.role !== Role.BGH)) {
@@ -848,11 +1004,45 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         }
         setIsLoading(true);
         try {
-            // In a real application, this would trigger an email or push notification.
-            // For this demo, we'll just show a success toast.
-            await new Promise(resolve => setTimeout(resolve, 1000)); // Simulate network request
-            console.log(`Sending reminders for: ${missingClasses.join(', ')} on ${date}`);
-            addToast(`Đã gửi thành công nhắc nhở đến ${missingClasses.length} lớp.`, 'success');
+            // Real reminder: persist a record and dispatch emails via the
+            // send-reminder-email Edge Function (deployable) when configured.
+            const teacherRows = await supabase
+                .from('profiles')
+                .select('email')
+                .eq('role', Role.GV)
+                .in('assigned_class', missingClasses);
+            const recipientEmails = Array.from(new Set(
+                (teacherRows.data || []).map(r => r.email).filter(Boolean)
+            ));
+
+            const { error: insertError } = await supabase.from('reminders').insert({
+                reminder_date: date,
+                class_names: missingClasses,
+                recipient_emails: recipientEmails,
+                sent_by: currentUser.id,
+                sent_by_name: currentUser.displayName,
+                status: 'recorded',
+            });
+            if (insertError) throw insertError;
+
+            let emailsSent = 0;
+            try {
+                const { data, error } = await supabase.functions.invoke('send-reminder-email', {
+                    body: { date, classNames: missingClasses, recipientEmails },
+                });
+                if (error) {
+                    console.warn("Edge function not available:", error);
+                } else if (data?.emailsSent != null) {
+                    emailsSent = data.emailsSent;
+                }
+            } catch (e) {
+                console.warn("Edge function invoke failed (email dispatch disabled):", e);
+            }
+
+            addToast(
+                `Đã gửi nhắc nhở đến ${missingClasses.length} lớp${emailsSent > 0 ? ` (${emailsSent} email)` : ' (email chưa được cấu hình — đã ghi nhận trong hệ thống)'}.`,
+                'success'
+            );
         } catch (error) {
             console.error("Failed to send reminders", error);
             addToast("Lỗi khi gửi nhắc nhở.", "error");
@@ -862,32 +1052,31 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }, [currentUser, addToast, setIsLoading]);
 
     const archiveRegistrationsByMonth = useCallback(async (year: number, month: number) => {
+        if (!canArchive()) { addToast("Bạn không có quyền lưu trữ dữ liệu.", "error"); return; }
         setIsLoading(true);
         try {
             const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
             const endDate = new Date(year, month, 0);
             const endDateStr = `${year}-${String(month).padStart(2, '0')}-${String(endDate.getDate()).padStart(2, '0')}`;
-            
-            const q = query(collection(db, 'registrations'), where('date', '>=', startDate), where('date', '<=', endDateStr));
-            const snapshot = await getDocs(q);
-            
-            if (snapshot.empty) {
+
+            const { count, error: countError } = await supabase
+                .from('registrations')
+                .select('id', { count: 'exact', head: true })
+                .gte('date', startDate)
+                .lte('date', endDateStr);
+            if (countError) throw countError;
+
+            if ((count || 0) === 0) {
                 addToast(`Không có dữ liệu nào trong tháng ${month}/${year} để lưu trữ.`, 'success');
                 setIsLoading(false);
                 return;
             }
-            
-            const batch = writeBatch(db);
-            snapshot.forEach(docSnap => {
-                const data = docSnap.data();
-                const newDocRef = doc(collection(db, 'archived_registrations'));
-                batch.set(newDocRef, data);
-                batch.delete(docSnap.ref);
-            });
-            
-            await batch.commit();
-            await logAction('ARCHIVE_DATA', { year, month, count: snapshot.size });
-            addToast(`Đã lưu trữ thành công ${snapshot.size} mục từ tháng ${month}/${year}.`, 'success');
+
+            const { data: archiveData, error: rpcError } = await supabase.rpc('archive_registrations', { p_start: startDate, p_end: endDateStr });
+            if (rpcError) throw rpcError;
+
+            await logAction('ARCHIVE_DATA', { year, month, count: archiveData ?? count });
+            addToast(`Đã lưu trữ thành công ${archiveData ?? count} mục từ tháng ${month}/${year}.`, 'success');
             triggerRefetch();
         } catch (error) {
             console.error("Failed to archive data", error);
@@ -895,7 +1084,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         } finally {
             setIsLoading(false);
         }
-    }, [db, addToast, logAction, setIsLoading]);
+    }, [addToast, logAction, setIsLoading]);
 
     const getArchivedRegistrations = useCallback(async (options: {
         dateRange: { from: string, to: string },
@@ -903,22 +1092,24 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         getAll?: boolean
     }): Promise<{registrations: MealRegistration[]}> => {
         const { dateRange, classNames } = options;
-        const constraints: QueryConstraint[] = [];
+        let query = supabase.from('archived_registrations').select('*');
+        if (dateRange && dateRange.from) query = query.gte('date', dateRange.from);
+        if (dateRange && dateRange.to) query = query.lte('date', dateRange.to);
+        if (classNames && classNames.length > 0) query = query.in('class_name', classNames);
 
-        if (dateRange && dateRange.from) constraints.push(where('date', '>=', dateRange.from));
-        if (dateRange && dateRange.to) constraints.push(where('date', '<=', dateRange.to));
-        if (classNames && classNames.length > 0) constraints.push(where('className', 'in', classNames));
-        
-        const q = query(collection(db, 'archived_registrations'), ...constraints);
-        const snapshot = await getDocs(q);
-        const registrations = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as MealRegistration));
+        const { data, error } = await query;
+        if (error) {
+            console.error("getArchivedRegistrations error:", error);
+            return { registrations: [] };
+        }
+        const registrations = (data || []).map(mapRegistrationRow);
         return { registrations };
-    }, [db]);
+    }, []);
     
   const value = useMemo(() => ({
     editingInfo, classes, users, announcements, unreadAnnouncementsCount, dataVersion, recentlyUpdatedKeys, showBackupPrompt, isAnnouncementRead,
-    addRegistrations, updateRegistrations, requestEdit, clearEditing, deleteRegistrations, deleteMultipleRegistrationsByDate, addClass, updateClass, deleteClass, getRegistrations, addUser, updateUser, deleteUser, addAnnouncement, updateAnnouncement, deleteAnnouncement, markAnnouncementsAsRead, getAuditLogs, deleteAuditLogs, exportData, dismissBackupPrompt, archiveRegistrationsByMonth, getArchivedRegistrations, sendReminderForMissingClasses
-  }), [editingInfo, classes, users, announcements, unreadAnnouncementsCount, dataVersion, recentlyUpdatedKeys, showBackupPrompt, isAnnouncementRead, addRegistrations, updateRegistrations, requestEdit, clearEditing, deleteRegistrations, deleteMultipleRegistrationsByDate, addClass, updateClass, deleteClass, getRegistrations, addUser, updateUser, deleteUser, addAnnouncement, updateAnnouncement, deleteAnnouncement, markAnnouncementsAsRead, getAuditLogs, deleteAuditLogs, exportData, dismissBackupPrompt, archiveRegistrationsByMonth, getArchivedRegistrations, sendReminderForMissingClasses]);
+    addRegistrations, updateRegistrations, requestEdit, clearEditing, deleteRegistrations, deleteMultipleRegistrationsByDate, addClass, updateClass, deleteClass, getRegistrations, updateUser, deleteUser, approveUser, rejectUser, refreshUsers, addAnnouncement, updateAnnouncement, deleteAnnouncement, markAnnouncementsAsRead, getAuditLogs, deleteAuditLogs, exportData, dismissBackupPrompt, archiveRegistrationsByMonth, getArchivedRegistrations, sendReminderForMissingClasses
+  }), [editingInfo, classes, users, announcements, unreadAnnouncementsCount, dataVersion, recentlyUpdatedKeys, showBackupPrompt, isAnnouncementRead, addRegistrations, updateRegistrations, requestEdit, clearEditing, deleteRegistrations, deleteMultipleRegistrationsByDate, addClass, updateClass, deleteClass, getRegistrations, updateUser, deleteUser, approveUser, rejectUser, refreshUsers, addAnnouncement, updateAnnouncement, deleteAnnouncement, markAnnouncementsAsRead, getAuditLogs, deleteAuditLogs, exportData, dismissBackupPrompt, archiveRegistrationsByMonth, getArchivedRegistrations, sendReminderForMissingClasses]);
 
   return (
     <DataContext.Provider value={value}>

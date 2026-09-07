@@ -1,6 +1,5 @@
 import React, { useState, FormEvent } from 'react';
 import { useAuth } from '../contexts/AuthContext';
-import { FirebaseError } from 'firebase/app';
 
 const LoadingSpinner: React.FC = () => (
     <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -9,42 +8,92 @@ const LoadingSpinner: React.FC = () => (
     </svg>
 );
 
-const getFriendlyAuthError = (errorCode: string): string => {
-    switch (errorCode) {
-        case 'auth/invalid-email':
-            return 'Địa chỉ email không hợp lệ.';
-        case 'auth/user-not-found':
-        case 'auth/invalid-credential':
-             return 'Email hoặc mật khẩu không chính xác.';
-        case 'auth/wrong-password':
-            return 'Mật khẩu không chính xác.';
-        case 'auth/too-many-requests':
-            return 'Tài khoản đã bị tạm khóa do quá nhiều lần thử. Vui lòng thử lại sau.';
-        default:
-            return 'Đã xảy ra lỗi không xác định. Vui lòng thử lại.';
+const getFriendlyAuthError = (message: string): string => {
+    const m = (message || '').toLowerCase();
+    if (m.includes('email_confirmation_required')) {
+        return 'Đăng ký thành công. Tuy nhiên hệ thống đang yêu cầu xác nhận email. Quản trị viên cần tắt xác nhận email trong Supabase (Authentication → Email → Confirm email) để đăng nhập chỉ phụ thuộc sự duyệt của Admin.';
     }
+    if (m.includes('invalid login credentials') || m.includes('invalid_credentials')) {
+        return 'Email hoặc mật khẩu không chính xác.';
+    }
+    if (m.includes('email not confirmed')) {
+        return 'Tài khoản chưa được duyệt hoặc email chưa được xác nhận. Vui lòng đợi Admin duyệt (và đảm bảo xác nhận email đã được tắt).';
+    }
+    if (m.includes('user already registered') || m.includes('already been registered')) {
+        return 'Email này đã được đăng ký.';
+    }
+    if (m.includes('rate limit') || m.includes('too many') || m.includes('for security purposes') || m.includes('only request this after')) {
+        const seconds = (message.match(/after\s+(\d+)\s+seconds?/i) || [])[1];
+        const waitHint = seconds ? ` Hệ thống yêu cầu chờ khoảng ${seconds} giây.` : ' Song, hãy xem nguyên nhân dưới đây vì giới hạn có thể là theo giờ, không phải vài phút.';
+        return (
+            'Đăng ký tạm bị giới hạn tần suất.' + waitHint +
+            ' Nguyên nhân thường gặp nhất: Supabase đang bật "Confirm email" — mỗi lần đăng ký gửi 1 email xác nhận và bản SMTP mặc định chỉ cho 2 email/giờ cho toàn project, nên email mới cũng bị chặn. ' +
+            'Hãy tắt "Confirm email" trong Supabase (Authentication → Providers → Email → bỏ chọn Confirm email), hoặc chờ khoảng 1 giờ rồi thử lại.'
+        );
+    }
+    return 'Đã xảy ra lỗi: ' + message;
 };
 
 const LoginPage: React.FC = () => {
-    const { signInWithEmail } = useAuth();
+    const { signInWithEmail, signUp, approvalPending } = useAuth();
+    const [mode, setMode] = useState<'login' | 'register'>('login');
+
+    // Login fields
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
+
+    // Register fields
+    const [regDisplayName, setRegDisplayName] = useState('');
+    const [regEmail, setRegEmail] = useState('');
+    const [regPassword, setRegPassword] = useState('');
+    const [regConfirm, setRegConfirm] = useState('');
+
     const [error, setError] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+    const [regSuccess, setRegSuccess] = useState('');
 
-    const handleSubmit = async (e: FormEvent) => {
+    const switchMode = (m: 'login' | 'register') => {
+        setMode(m);
+        setError('');
+        setRegSuccess('');
+    };
+
+    const handleLogin = async (e: FormEvent) => {
         e.preventDefault();
         setError('');
         setIsLoading(true);
         try {
             await signInWithEmail(email, password);
-            // On successful login, onAuthStateChanged in context will handle the rest
         } catch (err: any) {
-            if (err instanceof FirebaseError) {
-                setError(getFriendlyAuthError(err.code));
-            } else {
-                setError('Đã xảy ra lỗi khi đăng nhập.');
-            }
+            setError(err?.message ? getFriendlyAuthError(err.message) : 'Đã xảy ra lỗi khi đăng nhập.');
+            setIsLoading(false);
+        }
+    };
+
+    const handleRegister = async (e: FormEvent) => {
+        e.preventDefault();
+        setError('');
+        setRegSuccess('');
+        if (regPassword.length < 6) {
+            setError('Mật khẩu phải có ít nhất 6 ký tự.');
+            return;
+        }
+        if (regPassword !== regConfirm) {
+            setError('Mật khẩu xác nhận không khớp.');
+            return;
+        }
+        setIsLoading(true);
+        try {
+            await signUp(regEmail, regPassword, regDisplayName);
+            setRegSuccess('Đăng ký thành công. Tài khoản của bạn đang chờ Admin duyệt. Vui lòng quay lại sau.');
+            setMode('register');
+            setRegDisplayName('');
+            setRegEmail('');
+            setRegPassword('');
+            setRegConfirm('');
+        } catch (err: any) {
+            setError(err?.message ? getFriendlyAuthError(err.message) : 'Đã xảy ra lỗi khi đăng ký.');
+        } finally {
             setIsLoading(false);
         }
     };
@@ -62,72 +111,88 @@ const LoginPage: React.FC = () => {
                     </div>
                 </div>
                 <h2 className="mt-4 text-center text-3xl font-extrabold text-gray-900 dark:text-gray-100">
-                    Trường Mầm non 24/3
+                    Trường Mầm non Tam Kỳ 1
                 </h2>
                  <p className="mt-2 text-center text-lg text-gray-600 dark:text-gray-400">
-                    Đăng nhập hệ thống suất ăn
+                    Hệ thống đăng ký suất ăn
                 </p>
             </div>
 
             <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
                 <div className="bg-white dark:bg-gray-800 py-8 px-4 shadow-lg sm:rounded-lg sm:px-10">
-                    <form className="space-y-6" onSubmit={handleSubmit}>
-                        <div>
-                            <label htmlFor="email" className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                Địa chỉ email
-                            </label>
-                            <div className="mt-1">
-                                <input
-                                    id="email"
-                                    name="email"
-                                    type="email"
-                                    autoComplete="email"
-                                    required
-                                    value={email}
-                                    onChange={(e) => setEmail(e.target.value)}
-                                    className="appearance-none block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-teal-500 focus:border-teal-500 sm:text-sm bg-white dark:bg-gray-700 dark:text-white"
-                                />
-                            </div>
+                    <div className="flex rounded-md overflow-hidden border dark:border-gray-600 mb-6">
+                        <button type="button" onClick={() => switchMode('login')} className={`flex-1 py-2 text-sm font-medium ${mode === 'login' ? 'bg-teal-600 text-white' : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200'}`}>Đăng nhập</button>
+                        <button type="button" onClick={() => switchMode('register')} className={`flex-1 py-2 text-sm font-medium ${mode === 'register' ? 'bg-teal-600 text-white' : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200'}`}>Đăng ký</button>
+                    </div>
+
+                    {approvalPending && !regSuccess && (
+                        <div role="alert" className="text-amber-700 dark:text-amber-300 text-sm p-3 bg-amber-50 dark:bg-amber-900/50 rounded-md mb-4">
+                            Tài khoản của bạn đang chờ Admin duyệt. Bạn chưa thể đăng nhập cho đến khi được duyệt.
                         </div>
+                    )}
 
-                        <div>
-                            <label htmlFor="password"className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                                Mật khẩu
-                            </label>
-                            <div className="mt-1">
-                                <input
-                                    id="password"
-                                    name="password"
-                                    type="password"
-                                    autoComplete="current-password"
-                                    required
-                                    value={password}
-                                    onChange={(e) => setPassword(e.target.value)}
-                                    className="appearance-none block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-teal-500 focus:border-teal-500 sm:text-sm bg-white dark:bg-gray-700 dark:text-white"
-                                />
-                            </div>
+                    {regSuccess && (
+                        <div role="alert" className="text-green-700 dark:text-green-300 text-sm p-3 bg-green-50 dark:bg-green-900/50 rounded-md mb-4">
+                            {regSuccess}
                         </div>
+                    )}
 
-                        {error && (
-                            <div role="alert" aria-live="assertive" className="text-red-600 dark:text-red-400 text-sm p-3 bg-red-50 dark:bg-red-900/50 rounded-md">
-                                {error}
-                            </div>
-                        )}
-
-                        <div>
-                            <button
-                                type="submit"
-                                disabled={isLoading}
-                                className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 disabled:bg-teal-400 dark:disabled:bg-teal-800 disabled:cursor-wait"
-                            >
+                    {mode === 'login' ? (
+                        <form className="space-y-6" onSubmit={handleLogin}>
+                            <Input label="Địa chỉ email" id="email" type="email" autoComplete="email" value={email} onChange={setEmail} />
+                            <Input label="Mật khẩu" id="password" type="password" autoComplete="current-password" value={password} onChange={setPassword} />
+                            {error && <ErrorBox message={error} />}
+                            <button type="submit" disabled={isLoading} className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 disabled:bg-teal-400 dark:disabled:bg-teal-800 disabled:cursor-wait">
                                 {isLoading ? <LoadingSpinner /> : 'Đăng nhập'}
                             </button>
-                        </div>
-                    </form>
+                        </form>
+                    ) : (
+                        <form className="space-y-6" onSubmit={handleRegister}>
+                            <Input label="Họ và tên" id="regDisplayName" type="text" autoComplete="name" value={regDisplayName} onChange={setRegDisplayName} />
+                            <Input label="Địa chỉ email" id="regEmail" type="email" autoComplete="email" value={regEmail} onChange={setRegEmail} />
+                            <Input label="Mật khẩu" id="regPassword" type="password" autoComplete="new-password" value={regPassword} onChange={setRegPassword} />
+                            <Input label="Xác nhận mật khẩu" id="regConfirm" type="password" autoComplete="new-password" value={regConfirm} onChange={setRegConfirm} />
+                            <p className="text-xs text-gray-500 dark:text-gray-400">Sau khi đăng ký, tài khoản sẽ được Admin duyệt trước khi bạn có thể sử dụng hệ thống.</p>
+                            {error && <ErrorBox message={error} />}
+                            <button type="submit" disabled={isLoading} className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-teal-600 hover:bg-teal-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-teal-500 disabled:bg-teal-400 dark:disabled:bg-teal-800 disabled:cursor-wait">
+                                {isLoading ? <LoadingSpinner /> : 'Đăng ký'}
+                            </button>
+                        </form>
+                    )}
                 </div>
             </div>
         </div>
     );
 };
+
+const Input: React.FC<{
+    label: string;
+    id: string;
+    type: string;
+    autoComplete: string;
+    value: string;
+    onChange: (v: string) => void;
+}> = ({ label, id, type, autoComplete, value, onChange }) => (
+    <div>
+        <label htmlFor={id} className="block text-sm font-medium text-gray-700 dark:text-gray-300">{label}</label>
+        <div className="mt-1">
+            <input
+                id={id}
+                type={type}
+                autoComplete={autoComplete}
+                required
+                value={value}
+                onChange={(e) => onChange(e.target.value)}
+                className="appearance-none block w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-teal-500 focus:border-teal-500 sm:text-sm bg-white dark:bg-gray-700 dark:text-white"
+            />
+        </div>
+    </div>
+);
+
+const ErrorBox: React.FC<{ message: string }> = ({ message }) => (
+    <div role="alert" aria-live="assertive" className="text-red-600 dark:text-red-400 text-sm p-3 bg-red-50 dark:bg-red-900/50 rounded-md">
+        {message}
+    </div>
+);
 
 export default LoginPage;

@@ -1,14 +1,9 @@
 import React, { useState, useRef, useEffect, FormEvent } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useUI } from '../contexts/UIContext';
-import { FirebaseError } from 'firebase/app';
-import { Role, View } from '../types';
+import { Role } from '../types';
 
-interface UserProfileDropdownProps {
-    setView: (view: View) => void;
-}
-
-const UserProfileDropdown: React.FC<UserProfileDropdownProps> = ({ setView }) => {
+const UserProfileDropdown: React.FC = () => {
     const { currentUser, signOutUser, changePassword } = useAuth();
     const { addToast } = useUI();
     const [isOpen, setIsOpen] = useState(false);
@@ -67,22 +62,13 @@ const UserProfileDropdown: React.FC<UserProfileDropdownProps> = ({ setView }) =>
             setIsModalOpen(false);
         } catch (err) {
             console.error(err);
-             if (err instanceof FirebaseError && err.code === 'auth/requires-recent-login') {
-                setPasswordError('Phiên đăng nhập đã hết hạn. Vui lòng đăng xuất và đăng nhập lại để đổi mật khẩu.');
-            } else {
-                setPasswordError('Đã xảy ra lỗi. Vui lòng thử lại.');
-            }
+            setPasswordError('Đã xảy ra lỗi khi đổi mật khẩu. Vui lòng đăng xuất và đăng nhập lại, sau đó thử lại.');
         } finally {
             setIsChangingPassword(false);
         }
     };
 
     if (!currentUser) return null;
-
-    const handleNavigateToManagement = () => {
-        setView(View.Management);
-        setIsOpen(false);
-    };
 
     return (
         <div className="relative" ref={wrapperRef}>
@@ -106,9 +92,6 @@ const UserProfileDropdown: React.FC<UserProfileDropdownProps> = ({ setView }) =>
                         )}
                     </div>
                     <div className="py-1">
-                        {currentUser.role === Role.Admin && (
-                            <button onClick={handleNavigateToManagement} className="w-full text-left block px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700">Quản lý</button>
-                        )}
                         <button onClick={openChangePasswordModal} className="w-full text-left block px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700">Đổi mật khẩu</button>
                         <button onClick={handleSignOut} className="w-full text-left block px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700">Đăng xuất</button>
                     </div>

@@ -3,7 +3,6 @@ import { useData } from '../contexts/DataContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useUI } from '../contexts/UIContext';
 import { Announcement, Role } from '../types';
-import { Timestamp } from 'firebase/firestore';
 
 const LoadingSpinner: React.FC<{ size?: string; color?: string }> = ({ size = 'h-5 w-5', color = 'text-white' }) => (
     <svg className={`animate-spin ${size} ${color}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -156,8 +155,8 @@ const AnnouncementsPage: React.FC = () => {
         }
     };
     
-    const formatTimestamp = (ts: Timestamp) => {
-        return ts.toDate().toLocaleString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const formatTimestamp = (ts: string) => {
+        return new Date(ts).toLocaleString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
     }
 
     return (

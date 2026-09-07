@@ -1,5 +1,3 @@
-import { Timestamp } from 'firebase/firestore';
-
 export enum MealType {
   KidsLunch = 'Bữa trưa (trẻ)',
   KidsBreakfast = 'Bữa mai (trẻ)',
@@ -12,16 +10,16 @@ export interface MealRegistration {
   date: string; // YYYY-MM-DD format
   mealType: MealType;
   count: number;
-  updatedAt?: Timestamp;
+  updatedAt?: string; // ISO timestamp
   registeredBy?: string; // Name of the user who registered/updated
   registeredById?: string; // UID of the user
 }
 
 export interface ClassInfo {
-  id: string; // Document ID from Firestore
+  id: string; // Row ID from Supabase
   name: string;
   studentCount: number;
-  updatedAt?: Timestamp;
+  updatedAt?: string; // ISO timestamp
 }
 
 export enum View {
@@ -34,6 +32,7 @@ export enum View {
 }
 
 export enum ManagementTab {
+  Approval = 'approval',
   Classes = 'classes',
   Users = 'users',
   AuditLogs = 'audit_logs',
@@ -61,6 +60,7 @@ export enum Role {
   BGH = 'Ban Giám hiệu',
   KT_CD = 'KT & CD',
   GV = 'Giáo viên',
+  Pending = 'Chưa duyệt',
 }
 
 export interface User {
@@ -75,7 +75,7 @@ export interface Announcement {
     id: string;
     title: string;
     content: string;
-    createdAt: Timestamp;
+    createdAt: string; // ISO timestamp
     createdBy: string; // User's display name
     createdById: string; // User's ID
     readBy: string[]; // Array of user IDs who have read it
@@ -90,7 +90,7 @@ export type AuditLogAction =
 
 export interface AuditLog {
     id: string;
-    timestamp: Timestamp;
+    timestamp: string; // ISO timestamp
     userId: string;
     userName: string;
     action: AuditLogAction;

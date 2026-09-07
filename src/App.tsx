@@ -69,10 +69,10 @@ const AppContent: React.FC = () => {
         </svg>
       </div>
       <h1 className="text-xl sm:text-2xl font-bold text-gray-800 dark:text-gray-100 hidden md:block">
-        Mầm non 24/3
+        Mầm non Tam Kỳ 1
       </h1>
        <h1 className="text-lg font-bold text-gray-800 dark:text-gray-100 md:hidden">
-        Mầm non 24/3
+        Mầm non Tam Kỳ 1
       </h1>
     </div>
   );
@@ -135,7 +135,7 @@ const AppContent: React.FC = () => {
   const getNavOrderForRole = (role: Role): View[] => {
       switch (role) {
           case Role.Admin:
-              return [View.Dashboard, View.Register, View.Announcements, View.List, View.Summary];
+              return [View.Dashboard, View.Register, View.Announcements, View.List, View.Summary, View.Management];
           case Role.BGH:
               return [View.Dashboard, View.Announcements, View.List, View.Summary];
           case Role.KT_CD:
@@ -150,7 +150,7 @@ const AppContent: React.FC = () => {
   const navOrder = getNavOrderForRole(currentUser.role);
 
   const renderNav = (isMobile: boolean) => {
-    const navItemsToRender = isMobile ? navOrder : navOrder;
+    const navItemsToRender = navOrder;
     
     return (
        <div className={isMobile ? `flex items-start justify-around text-xs font-medium` : 'hidden sm:flex space-x-1'}>
@@ -195,7 +195,7 @@ const AppContent: React.FC = () => {
               <div className="border-l border-gray-200 dark:border-gray-600 ml-2 pl-2 flex items-center space-x-2">
                 <ThemeToggle />
                 <Suspense fallback={<div className="w-8 h-8 bg-gray-200 rounded-full animate-pulse" />}>
-                  <UserProfileDropdown setView={setView} />
+                  <UserProfileDropdown />
                 </Suspense>
               </div>
             </div>

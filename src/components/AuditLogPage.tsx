@@ -2,7 +2,6 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useData } from '../contexts/DataContext';
 import { useUI } from '../contexts/UIContext';
 import { AuditLog } from '../types';
-import { DocumentData, DocumentSnapshot, Timestamp } from 'firebase/firestore';
 
 const LoadingSpinner: React.FC = () => (
     <div className="flex justify-center items-center p-8">
@@ -22,8 +21,8 @@ const LoadingMoreSpinner: React.FC = () => (
     </div>
 );
 
-const formatTimestamp = (ts: Timestamp) => {
-    return ts.toDate().toLocaleString('vi-VN', {
+const formatTimestamp = (ts: string) => {
+    return new Date(ts).toLocaleString('vi-VN', {
         day: '2-digit', month: '2-digit', year: 'numeric',
         hour: '2-digit', minute: '2-digit', second: '2-digit'
     });
@@ -71,7 +70,7 @@ const AuditLogPage: React.FC = () => {
     const [logs, setLogs] = useState<AuditLog[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [isFetchingMore, setIsFetchingMore] = useState(false);
-    const [lastDoc, setLastDoc] = useState<DocumentSnapshot<DocumentData> | null>(null);
+    const [offset, setOffset] = useState(0);
     const [hasMore, setHasMore] = useState(true);
 
     const [selectedLogs, setSelectedLogs] = useState<Set<string>>(new Set());
@@ -87,21 +86,21 @@ const AuditLogPage: React.FC = () => {
             setIsLoading(true);
         }
         try {
-            const { logs: newLogs, lastDoc: newLastDoc } = await getAuditLogs({
+            const { logs: newLogs, hasMore: newHasMore } = await getAuditLogs({
                 limit: ITEMS_PER_PAGE,
-                lastVisibleDoc: loadMore ? lastDoc : null,
+                offset: loadMore ? offset : 0,
             });
             
             setLogs(prev => loadMore ? [...prev, ...newLogs] : newLogs);
-            setLastDoc(newLastDoc);
-            setHasMore(newLogs.length === ITEMS_PER_PAGE);
+            setOffset(loadMore ? offset + newLogs.length : newLogs.length);
+            setHasMore(newHasMore);
         } catch (error) {
             console.error("Failed to fetch audit logs", error);
         } finally {
             setIsLoading(false);
             setIsFetchingMore(false);
         }
-    }, [getAuditLogs, lastDoc]);
+    }, [getAuditLogs, offset]);
 
     const loaderRef = useCallback((node: HTMLElement | null) => {
         if (isFetchingMore || isLoading) return;
