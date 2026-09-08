@@ -52,7 +52,7 @@ const OverwriteComparison: React.FC<{
 };
 
 
-const DailyRegistrationForm: React.FC<{}> = () => {
+const DailyRegistrationForm: React.FC<{ onSuccess?: () => void }> = ({ onSuccess }) => {
   const { classes } = useData();
   const { currentUser } = useAuth();
   const { isOffline } = useUI();
@@ -66,7 +66,7 @@ const DailyRegistrationForm: React.FC<{}> = () => {
     isEditing,
     breakfastDayIsSunday,
     formatDate
-  } = useDailyRegistrationForm();
+  } = useDailyRegistrationForm({ onSuccess });
 
   const {
     className, date, kidsLunchCount, teachersLunchCount, kidsNextDayBreakfastCount,

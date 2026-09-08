@@ -5,9 +5,10 @@ import { useUI } from '../contexts/UIContext';
 
 interface UseMultiDayRegistrationFormProps {
     setActiveDate: Dispatch<SetStateAction<string | null>>;
+    onSuccess?: () => void;
 }
 
-export const useMultiDayRegistrationForm = ({ setActiveDate }: UseMultiDayRegistrationFormProps) => {
+export const useMultiDayRegistrationForm = ({ setActiveDate, onSuccess }: UseMultiDayRegistrationFormProps) => {
     const { addRegistrations, getRegistrations, updateRegistrations, classes } = useData();
     const { addToast } = useUI();
     
@@ -195,12 +196,13 @@ export const useMultiDayRegistrationForm = ({ setActiveDate }: UseMultiDayRegist
             }
             addToast(`Đăng ký thành công cho lớp ${className}.`, 'success');
             resetForm();
+            onSuccess?.();
         } catch (error: any) {
              if (String(error?.message ?? '').includes('STALE_DATA')) {
                 resetForm();
             }
         }
-    }, [addRegistrations, updateRegistrations, className, addToast, resetForm, overwriteConfirmation]);
+    }, [addRegistrations, updateRegistrations, className, addToast, resetForm, overwriteConfirmation, onSuccess]);
 
     return {
         state: {

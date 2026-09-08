@@ -84,7 +84,7 @@ const formatShortDateForTab = (date: Date): string => {
     return `${dayOfWeek}, ${day}/${month}`;
 }
 
-const MultiDayRegistrationForm: React.FC<{}> = () => {
+const MultiDayRegistrationForm: React.FC<{ onSuccess?: () => void }> = ({ onSuccess }) => {
   const { classes } = useData();
   const { currentUser } = useAuth();
   const { isOffline } = useUI();
@@ -95,7 +95,7 @@ const MultiDayRegistrationForm: React.FC<{}> = () => {
       state,
       handlers,
       groupedConfirmation,
-  } = useMultiDayRegistrationForm({ setActiveDate });
+  } = useMultiDayRegistrationForm({ setActiveDate, onSuccess });
 
   const {
       className, formDates, counts, confirmationData,

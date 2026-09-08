@@ -215,9 +215,9 @@ const AppContent: React.FC = () => {
                 </nav>
               </div>
               {activeTab === Tab.Daily ? (
-                <DailyRegistrationForm />
+                <DailyRegistrationForm onSuccess={() => setView(View.Dashboard)} />
               ) : (
-                <MultiDayRegistrationForm />
+                <MultiDayRegistrationForm onSuccess={() => setView(View.Dashboard)} />
               )}
             </div>
           )}

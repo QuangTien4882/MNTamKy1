@@ -4,7 +4,8 @@ import { useData } from '../contexts/DataContext';
 import { useUI } from '../contexts/UIContext';
 import { formatDate, getInitialLunchDate, getBreakfastDateFrom } from '../utils/date';
 
-export const useDailyRegistrationForm = () => {
+export const useDailyRegistrationForm = (options?: { onSuccess?: () => void }) => {
+  const { onSuccess } = options || {};
   const { editingInfo, addRegistrations, updateRegistrations, clearEditing, getRegistrations, classes } = useData();
   const { addToast } = useUI();
 
@@ -109,12 +110,13 @@ export const useDailyRegistrationForm = () => {
         
         addToast(`${isEditing ? 'Cập nhật' : 'Đăng ký'} thành công cho lớp ${className}.`, 'success');
         resetForm();
+        onSuccess?.();
     } catch (error: any) {
         if (String(error?.message ?? '').includes('STALE_DATA')) {
             resetForm();
         }
     }
-  }, [addRegistrations, updateRegistrations, isEditing, className, addToast, resetForm, originalRegistrations, overwriteConfirmation]);
+  }, [addRegistrations, updateRegistrations, isEditing, className, addToast, resetForm, originalRegistrations, overwriteConfirmation, onSuccess]);
 
   const validate = useCallback(() => {
       const newErrors: Record<string, string> = {};
