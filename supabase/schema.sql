@@ -586,18 +586,14 @@ begin
   end loop;
 
   -- Updates of existing rows.
-  for v_id in
-    select (x.value ->> 'id')::uuid
-    from jsonb_array_elements(coalesce(p_updates, '[]'::jsonb)) x
-  loop
-    update public.registrations r
-    set count = (x.value ->> 'count')::integer,
-        registered_by_id = coalesce((x.value ->> 'registered_by_id')::uuid, r.registered_by_id),
-        registered_by = coalesce((x.value ->> 'registered_by')::text, r.registered_by),
-        updated_at = v_now
-    from jsonb_array_elements(coalesce(p_updates, '[]'::jsonb)) x
-    where r.id = v_id;
-  end loop;
+  update public.registrations r
+  set count = u.count,
+      registered_by_id = coalesce(u.registered_by_id, r.registered_by_id),
+      registered_by = coalesce(u.registered_by, r.registered_by),
+      updated_at = v_now
+  from jsonb_to_recordset(coalesce(p_updates, '[]'::jsonb))
+    as u(id uuid, count integer, registered_by_id uuid, registered_by text)
+  where r.id = u.id;
 
   -- Deletes.
   if coalesce(array_length(p_delete_ids, 1), 0) > 0 then
