@@ -8,7 +8,7 @@ interface UseMultiDayRegistrationFormProps {
 }
 
 export const useMultiDayRegistrationForm = ({ setActiveDate }: UseMultiDayRegistrationFormProps) => {
-    const { addRegistrations, getRegistrations, updateRegistrations } = useData();
+    const { addRegistrations, getRegistrations, updateRegistrations, classes } = useData();
     const { addToast } = useUI();
     
     // State
@@ -160,6 +160,17 @@ export const useMultiDayRegistrationForm = ({ setActiveDate }: UseMultiDayRegist
 
         if (hasInvalidCount) { addToast('Số lượng suất ăn không thể là số âm.', 'error'); return; }
 
+        const studentCount = classes.find(c => c.name === className)?.studentCount;
+        if (studentCount !== undefined) {
+            for (const reg of newRegistrations) {
+                if ((reg.mealType === MealType.KidsLunch || reg.mealType === MealType.KidsBreakfast) && reg.count > studentCount) {
+                    const dateDisplay = reg.date ? new Date(reg.date + 'T00:00:00').toLocaleDateString('vi-VN') : '';
+                    addToast(`Số lượng ${reg.mealType} (${reg.count}) ngày ${dateDisplay} vượt quá sĩ số lớp ${className} (${studentCount}).`, 'error');
+                    return;
+                }
+            }
+        }
+
         const { registrations: existing } = await getRegistrations({ classNames: [className], dates: formDates, getAll: true });
         if (existing.length > 0) {
             const relevantExisting = existing.filter(ex => {
@@ -169,7 +180,7 @@ export const useMultiDayRegistrationForm = ({ setActiveDate }: UseMultiDayRegist
             if (relevantExisting.length > 0) { setOverwriteConfirmation({ data: newRegistrations, existing: relevantExisting }); return; }
         }
         setConfirmationData(newRegistrations);
-    }, [className, formDates, counts, addToast, getRegistrations, validate]);
+    }, [className, formDates, counts, addToast, getRegistrations, validate, classes]);
 
     const handleConfirmRegistration = useCallback(async (data: Omit<MealRegistration, 'id'>[]) => {
         if (!data) return;
@@ -185,7 +196,7 @@ export const useMultiDayRegistrationForm = ({ setActiveDate }: UseMultiDayRegist
             addToast(`Đăng ký thành công cho lớp ${className}.`, 'success');
             resetForm();
         } catch (error: any) {
-             if (error.message === 'STALE_DATA') {
+             if (String(error?.message ?? '').includes('STALE_DATA')) {
                 resetForm();
             }
         }

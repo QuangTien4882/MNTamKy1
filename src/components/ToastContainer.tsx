@@ -19,15 +19,12 @@ const Toast: React.FC<{ message: string; type: 'success' | 'error'; onClose: () 
 };
 
 const ToastContainer: React.FC = () => {
-  const { toasts } = useUI();
-
-  // A dummy onClose as the toasts auto-dismiss via context timeout
-  const handleClose = () => {};
+  const { toasts, dismissToast } = useUI();
 
   return (
     <div role="status" aria-live="polite" className="fixed top-5 right-5 z-[100] w-full max-w-xs">
       {toasts.map(toast => (
-        <Toast key={toast.id} message={toast.message} type={toast.type} onClose={handleClose} />
+        <Toast key={toast.id} message={toast.message} type={toast.type} onClose={() => dismissToast(toast.id)} />
       ))}
     </div>
   );

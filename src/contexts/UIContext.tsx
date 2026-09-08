@@ -7,6 +7,7 @@ interface UIContextType {
   isLoading: boolean;
   isOffline: boolean;
   addToast: (message: string, type: 'success' | 'error') => void;
+  dismissToast: (id: number) => void;
   addNotification: (message: string) => void;
   setIsLoading: (loading: boolean) => void;
 }
@@ -22,7 +23,8 @@ export const UIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   );
   const isLoading = activeRequests > 0;
   const nextId = useRef(0);
-  const timersRef = useRef<number[]>([]);
+  const timersRef = useRef<Map<number, number>>(new Map());
+  const notificationTimersRef = useRef<number[]>([]);
 
   useEffect(() => {
     const handleOnline = () => setIsOffline(false);
@@ -40,22 +42,35 @@ export const UIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   useEffect(() => {
     return () => {
       timersRef.current.forEach(timer => clearTimeout(timer));
-      timersRef.current = [];
+      timersRef.current.clear();
+      notificationTimersRef.current.forEach(timer => clearTimeout(timer));
+      notificationTimersRef.current = [];
     };
   }, []);
 
   const addToast = useCallback((message: string, type: 'success' | 'error') => {
     const id = ++nextId.current;
     setToasts(prevToasts => [...prevToasts, { id, message, type }]);
-    timersRef.current.push(window.setTimeout(() => {
+    const timer = window.setTimeout(() => {
       setToasts(prevToasts => prevToasts.filter(toast => toast.id !== id));
-    }, 5000));
+      timersRef.current.delete(id);
+    }, 5000);
+    timersRef.current.set(id, timer);
+  }, []);
+
+  const dismissToast = useCallback((id: number) => {
+    const timer = timersRef.current.get(id);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timersRef.current.delete(id);
+    }
+    setToasts(prevToasts => prevToasts.filter(toast => toast.id !== id));
   }, []);
 
   const addNotification = useCallback((message: string) => {
     const id = ++nextId.current;
     setNotifications(prev => [...prev, { id, message }]);
-    timersRef.current.push(window.setTimeout(() => {
+    notificationTimersRef.current.push(window.setTimeout(() => {
         setNotifications(prev => prev.filter(n => n.id !== id));
     }, 4000));
   }, []);
@@ -71,9 +86,10 @@ export const UIProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
       isLoading,
       isOffline,
       addToast,
+      dismissToast,
       addNotification,
       setIsLoading
-  }), [toasts, notifications, isLoading, isOffline, addToast, addNotification]);
+  }), [toasts, notifications, isLoading, isOffline, addToast, dismissToast, addNotification]);
 
   return (
     <UIContext.Provider value={value}>

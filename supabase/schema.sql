@@ -26,6 +26,35 @@ create table if not exists public.profiles (
 -- update the default of an existing table).
 alter table public.profiles alter column role set default 'Chưa duyệt';
 
+-- Sĩ số: suất ăn của trẻ (bữa trưa & bữa mai) không được vượt quá sĩ số lớp.
+-- Chạy cho cả INSERT (đăng ký trực tiếp) lẫn UPDATE (kể cả qua RPC ghi/lock).
+create or replace function public.enforce_registration_capacity()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_student_count integer;
+begin
+  if new.meal_type in ('Bữa trưa (trẻ)', 'Bữa mai (trẻ)') then
+    select coalesce(student_count, 0) into v_student_count
+    from public.classes
+    where name = new.class_name;
+    if new.count > v_student_count then
+      raise exception 'Số lượng suất ăn của trẻ vượt quá sĩ số lớp.' using errcode = 'P0001';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists enforce_registration_capacity_trigger on public.registrations;
+create trigger enforce_registration_capacity_trigger
+before insert or update on public.registrations
+for each row
+execute function public.enforce_registration_capacity();
+
 -- Auto-create a profile whenever an auth user is created.
 -- Idempotent: if a profile already exists (duplicate/retry), it just syncs the
 -- email + display name without touching role/class (which are set by admins).
@@ -532,7 +561,10 @@ begin
     select (x.value ->> 'updated_at')::timestamptz into v_client
     from jsonb_array_elements(coalesce(p_originals, '[]'::jsonb)) x
     where (x.value ->> 'id')::uuid = v_id;
-    if v_client is not null and v_upd is distinct from v_client then
+    -- Compare at millisecond precision: Postgres stores microseconds while the
+    -- client serializes updated_at via JS Date (millisecond precision), so a
+    -- full-precision comparison would always report STALE_DATA on untouched rows.
+    if v_client is not null and date_trunc('milliseconds', v_upd) is distinct from date_trunc('milliseconds', v_client) then
       raise exception 'STALE_DATA' using errcode = 'P0001';
     end if;
   end loop;

@@ -390,7 +390,7 @@ const SummaryPage: React.FC<{setView: (view: View) => void}> = ({setView}) => {
             handleCancelEdit();
         } catch (error: any) {
             console.error("Update failed", error);
-            if (error?.message === 'STALE_DATA') {
+            if (String(error?.message ?? '').includes('STALE_DATA')) {
                 // Data changed elsewhere while the user was editing. Keep the
                 // user's edits and refresh the baseline so a retry can succeed.
                 const { registrations: freshOriginals } = await getRegistrations({ classNames: [className], dates: [date], getAll: true });

@@ -5,7 +5,7 @@ import { useUI } from '../contexts/UIContext';
 import { formatDate, getInitialLunchDate, getBreakfastDateFrom } from '../utils/date';
 
 export const useDailyRegistrationForm = () => {
-  const { editingInfo, addRegistrations, updateRegistrations, clearEditing, getRegistrations } = useData();
+  const { editingInfo, addRegistrations, updateRegistrations, clearEditing, getRegistrations, classes } = useData();
   const { addToast } = useUI();
 
   // Form state
@@ -110,7 +110,7 @@ export const useDailyRegistrationForm = () => {
         addToast(`${isEditing ? 'Cập nhật' : 'Đăng ký'} thành công cho lớp ${className}.`, 'success');
         resetForm();
     } catch (error: any) {
-        if (error.message === 'STALE_DATA') {
+        if (String(error?.message ?? '').includes('STALE_DATA')) {
             resetForm();
         }
     }
@@ -144,6 +144,18 @@ export const useDailyRegistrationForm = () => {
     
     if (klc < 0 || tlc < 0 || knbc < 0) { addToast('Số lượng suất ăn không thể là số âm.', 'error'); return; }
 
+    const studentCount = classes.find(c => c.name === className)?.studentCount;
+    if (studentCount !== undefined) {
+        if (klc > studentCount) {
+            addToast(`Số lượng ${MealType.KidsLunch} (${klc}) vượt quá sĩ số lớp ${className} (${studentCount}).`, 'error');
+            return;
+        }
+        if (!breakfastDayIsSunday && knbc > studentCount) {
+            addToast(`Số lượng ${MealType.KidsBreakfast} (${knbc}) vượt quá sĩ số lớp ${className} (${studentCount}).`, 'error');
+            return;
+        }
+    }
+
     const registrationsToSubmit: Omit<MealRegistration, 'id'>[] = [
         { className, date, mealType: MealType.KidsLunch, count: klc },
         { className, date, mealType: MealType.TeachersLunch, count: tlc },
@@ -173,7 +185,7 @@ export const useDailyRegistrationForm = () => {
     }
     
     setConfirmationData(registrationsToSubmit);
-  }, [className, kidsLunchCount, teachersLunchCount, kidsNextDayBreakfastCount, date, breakfastDate, isEditing, breakfastDayIsSunday, addToast, getRegistrations, validate]);
+  }, [className, kidsLunchCount, teachersLunchCount, kidsNextDayBreakfastCount, date, breakfastDate, isEditing, breakfastDayIsSunday, addToast, getRegistrations, validate, classes]);
   
   const createChangeHandler = useCallback((setter: Dispatch<SetStateAction<string>>, fieldName: string) => {
       return (value: string) => {

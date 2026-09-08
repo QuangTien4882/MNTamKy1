@@ -469,6 +469,22 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     };
   }, [currentUser, addToast, setIsLoading, seedDefaultClasses, canReadUsers, refetchClasses, refetchUsers, refetchAnnouncements]);
 
+  const getClassCapacity = useCallback((className: string): number => {
+    const cls = classes.find(c => c.name === className);
+    return cls ? cls.studentCount : -1; // -1 = chưa có lớp/sĩ số -> không chặn ở client
+  }, [classes]);
+
+  const findOverCapacity = useCallback((rows: { className: string; mealType: MealType; count: number }[]): { className: string; mealType: MealType; count: number; capacity: number } | null => {
+    for (const r of rows) {
+      if (r.mealType !== MealType.KidsLunch && r.mealType !== MealType.KidsBreakfast) continue;
+      const capacity = getClassCapacity(r.className);
+      if (capacity >= 0 && r.count > capacity) {
+        return { className: r.className, mealType: r.mealType, count: r.count, capacity };
+      }
+    }
+    return null;
+  }, [getClassCapacity]);
+
   const addRegistrations = useCallback(async (newRegistrations: Omit<MealRegistration, 'id' | 'updatedAt'>[]) => {
     if (!currentUser) {
         addToast("Lỗi: Không tìm thấy thông tin người dùng.", "error");
@@ -480,6 +496,11 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
     if (!newRegistrations.every(r => canWriteRegistrations(r.className))) {
         addToast("Bạn chỉ được đăng ký suất ăn cho lớp được phân công.", "error");
+        return;
+    }
+    const overCapacity = findOverCapacity(newRegistrations);
+    if (overCapacity) {
+        addToast(`Số lượng ${overCapacity.mealType} của lớp ${overCapacity.className} (${overCapacity.count}) vượt quá sĩ số ${overCapacity.capacity}.`, 'error');
         return;
     }
     try {
@@ -513,12 +534,13 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       await logAction('CREATE_REGISTRATION', { registrations: newRegistrations.filter(r => r.count > 0) });
       markRecentlyUpdated(newRegistrations.map(r => `${r.date}-${r.className}`));
       triggerRefetch();
-      addToast(`Đã lưu đăng ký ${newRegistrations.length} mục.`, 'success');
     } catch (error) {
       console.error("Failed to save registrations", error);
-      addToast("Lỗi khi lưu đăng ký.", "error");
+      const detail = error instanceof Error ? error.message : String(error);
+      addToast(`Lỗi khi lưu đăng ký${detail ? `: ${detail}` : '.'}`, "error");
+      throw error; // rethrow so callers never show a success toast on failure
     }
-  }, [addToast, currentUser, logAction, markRecentlyUpdated, triggerRefetch]);
+  }, [addToast, currentUser, logAction, markRecentlyUpdated, triggerRefetch, findOverCapacity]);
 
   const updateRegistrations = useCallback(async (updates: Omit<MealRegistration, 'id' | 'updatedAt'>[], originals: MealRegistration[]) => {
     if (!currentUser) {
@@ -527,6 +549,11 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
     if (!updates.every(u => canWriteRegistrations(u.className))) {
         addToast("Bạn chỉ được chỉnh sửa suất ăn cho lớp được phân công.", "error");
+        return;
+    }
+    const overCapacity = findOverCapacity(updates);
+    if (overCapacity) {
+        addToast(`Số lượng ${overCapacity.mealType} của lớp ${overCapacity.className} (${overCapacity.count}) vượt quá sĩ số ${overCapacity.capacity}.`, 'error');
         return;
     }
     try {
@@ -593,10 +620,12 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             throw error;
         } else {
             console.error("Failed to update registrations", error);
-            addToast("Lỗi khi cập nhật đăng ký.", "error");
+            const detail = error instanceof Error ? error.message : String(error);
+            addToast(`Lỗi khi cập nhật đăng ký${detail ? `: ${detail}` : '.'}`, "error");
+            throw error; // rethrow so callers never show a success toast on failure
         }
     }
-  }, [addToast, currentUser, logAction, markRecentlyUpdated, triggerRefetch, canWriteRegistrations]);
+  }, [addToast, currentUser, logAction, markRecentlyUpdated, triggerRefetch, canWriteRegistrations, findOverCapacity]);
 
   const getRegistrations = useCallback(async (options: {
     dates?: string[],
