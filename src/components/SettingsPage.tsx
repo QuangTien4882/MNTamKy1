@@ -185,22 +185,22 @@ const SettingsPage: React.FC = () => {
                             className="block w-full max-w-sm px-3 py-2 bg-white dark:bg-gray-700 dark:text-white border border-gray-300 dark:border-gray-600 rounded-md"
                         />
                     </div>
-                    <div className="bg-white dark:bg-gray-800/50 shadow-sm border dark:border-gray-700 rounded-lg overflow-hidden">
-                        <div className="overflow-x-auto">
-                            <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-                                <thead className="bg-gray-50 dark:bg-gray-700">
+                    <div className="bg-white dark:bg-gray-800 shadow-sm border dark:border-gray-700 rounded-lg overflow-hidden">
+                        <div className="overflow-auto max-h-[70vh]">
+                            <table className="min-w-full border-separate border-spacing-0">
+                                <thead>
                                     <tr>
-                                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">Tên lớp</th>
-                                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">Sĩ số</th>
-                                        <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">Hành động</th>
+                                        <th scope="col" className="sticky top-0 left-0 z-30 px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase bg-gray-50 dark:bg-gray-700 border-b border-gray-200 dark:border-gray-600">Tên lớp</th>
+                                        <th scope="col" className="sticky top-0 z-20 px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase bg-gray-50 dark:bg-gray-700 border-b border-gray-200 dark:border-gray-600">Sĩ số</th>
+                                        <th scope="col" className="sticky top-0 z-20 px-6 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-300 uppercase bg-gray-50 dark:bg-gray-700 border-b border-gray-200 dark:border-gray-600">Hành động</th>
                                     </tr>
                                 </thead>
-                                <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+                                <tbody>
                                     {filteredClasses.map(cls => (
                                         <tr key={cls.id}>
-                                            <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-800 dark:text-gray-100">{cls.name}</td>
-                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-300">{cls.studentCount}</td>
-                                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-4">
+                                            <td className="sticky left-0 z-10 bg-white dark:bg-gray-800 px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-800 dark:text-gray-100 border-b border-gray-200 dark:border-gray-700">{cls.name}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700">{cls.studentCount}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-4 border-b border-gray-200 dark:border-gray-700">
                                                 <button onClick={() => setEditingClass(cls)} className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-200">Sửa</button>
                                                 <button onClick={() => setDeletingClass(cls)} className="text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-200">Xóa</button>
                                             </td>

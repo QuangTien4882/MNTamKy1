@@ -271,30 +271,32 @@ const UserManagementPage: React.FC = () => {
                             className="block w-full max-w-sm px-3 py-2 bg-white dark:bg-gray-700 dark:text-white border border-gray-300 dark:border-gray-600 rounded-md"
                         />
                     </div>
-                    <div className="bg-white dark:bg-gray-800/50 shadow-sm border dark:border-gray-700 rounded-lg overflow-hidden">
-                        <div className="overflow-x-auto">
-                            <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-                                <thead className="bg-gray-50 dark:bg-gray-700">
+                    <div className="bg-white dark:bg-gray-800 shadow-sm border dark:border-gray-700 rounded-lg overflow-hidden">
+                        <div className="overflow-auto max-h-[70vh]">
+                            <table className="min-w-full border-separate border-spacing-0">
+                                <thead>
                                     <tr>
-                                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">Tên hiển thị</th>
-                                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">Email</th>
-                                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">Vai trò</th>
-                                        <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">Lớp phụ trách</th>
-                                        <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">Hành động</th>
+                                        <th scope="col" className="sticky top-0 left-0 z-30 px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase bg-gray-50 dark:bg-gray-700 border-b border-gray-200 dark:border-gray-600">Tên hiển thị</th>
+                                        <th scope="col" className="sticky top-0 z-20 px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase bg-gray-50 dark:bg-gray-700 border-b border-gray-200 dark:border-gray-600">Email</th>
+                                        <th scope="col" className="sticky top-0 z-20 px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase bg-gray-50 dark:bg-gray-700 border-b border-gray-200 dark:border-gray-600">Vai trò</th>
+                                        <th scope="col" className="sticky top-0 z-20 px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase bg-gray-50 dark:bg-gray-700 border-b border-gray-200 dark:border-gray-600">Lớp phụ trách</th>
+                                        <th scope="col" className="sticky top-0 z-20 px-6 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-300 uppercase bg-gray-50 dark:bg-gray-700 border-b border-gray-200 dark:border-gray-600">Hành động</th>
                                     </tr>
                                 </thead>
-                                <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
-                                    {filteredUsers.map(user => (
-                                        <tr key={user.id} className={user.role === Role.Pending ? 'bg-amber-50 dark:bg-amber-900/20' : undefined}>
-                                            <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-800 dark:text-gray-100">{user.displayName}</td>
-                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-300">{user.email}</td>
-                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-300">
+                                <tbody>
+                                    {filteredUsers.map(user => {
+                                        const isPending = user.role === Role.Pending;
+                                        return (
+                                        <tr key={user.id} className={isPending ? 'bg-amber-50 dark:bg-amber-900/20' : undefined}>
+                                            <td className={`sticky left-0 z-10 px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-800 dark:text-gray-100 border-b border-gray-200 dark:border-gray-700 ${isPending ? 'bg-amber-50 dark:bg-amber-900/20' : 'bg-white dark:bg-gray-800'}`}>{user.displayName}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700">{user.email}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700">
                                                 <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${getRoleBadgeClass(user.role)}`}>
                                                     {user.role}
                                                 </span>
                                             </td>
-                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-300">{user.assignedClass || '—'}</td>
-                                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-4">
+                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700">{user.assignedClass || '—'}</td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-4 border-b border-gray-200 dark:border-gray-700">
                                                 {user.role === Role.Pending ? (
                                                     <>
                                                         <button onClick={() => openApprove(user)} disabled={isLoading} className="text-green-600 hover:text-green-800 dark:text-green-400 dark:hover:text-green-300 disabled:opacity-50">Duyệt</button>
@@ -308,7 +310,8 @@ const UserManagementPage: React.FC = () => {
                                                 )}
                                             </td>
                                         </tr>
-                                    ))}
+                                        );
+                                    })}
                                 </tbody>
                             </table>
                             {filteredUsers.length === 0 && (
