@@ -289,7 +289,7 @@ const UserManagementPage: React.FC = () => {
                                         return (
                                         <tr key={user.id} className={isPending ? 'bg-amber-50 dark:bg-amber-900/20' : undefined}>
                                             <td className={`sticky left-0 z-10 px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-800 dark:text-gray-100 border-b border-gray-200 dark:border-gray-700 ${isPending ? 'bg-amber-50 dark:bg-amber-900/20' : 'bg-white dark:bg-gray-800'}`}>{user.displayName}</td>
-                                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700">{user.email}</td>
+                                            <td className="px-6 py-4 text-sm text-gray-600 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700 break-all">{user.email}</td>
                                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 dark:text-gray-300 border-b border-gray-200 dark:border-gray-700">
                                                 <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${getRoleBadgeClass(user.role)}`}>
                                                     {user.role}

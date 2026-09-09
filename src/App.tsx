@@ -227,7 +227,7 @@ const AppContent: React.FC = () => {
         </div>
       </header>
 
-      <main className={`max-w-4xl mx-auto py-8 px-4 sm:px-6 lg:px-8 pb-24 sm:pb-8 ${isOffline ? 'pb-offline-banner' : ''}`}>
+      <main className={`max-w-6xl mx-auto py-8 px-4 sm:px-6 lg:px-8 pb-24 sm:pb-8 ${isOffline ? 'pb-offline-banner' : ''}`}>
         <Suspense fallback={Fallback}>
           {view === View.Dashboard && <DashboardPage setView={setView} />}
           {view === View.Register && (
