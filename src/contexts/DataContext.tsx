@@ -13,6 +13,7 @@ interface DataContextType {
   classes: ClassInfo[];
   users: User[];
   announcements: Announcement[];
+  announcementsLoading: boolean;
   unreadAnnouncementsCount: number;
   hasMoreAnnouncements: boolean;
   loadMoreAnnouncements: () => void;
@@ -65,6 +66,10 @@ interface DataContextType {
     classNames?: string[],
     getAll?: boolean
   }) => Promise<{registrations: MealRegistration[]}>;
+  deleteArchivedRegistrations: (options: {
+    dateRange: {from: string, to: string},
+    classNames?: string[]
+  }) => Promise<number>;
   getRegisteredClasses: (date: string) => Promise<string[]>;
 }
 
@@ -177,6 +182,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [classes, setClasses] = useState<ClassInfo[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+  const [announcementsLoading, setAnnouncementsLoading] = useState(false);
   const [dataVersion, setDataVersion] = useState(0);
   const [recentlyUpdatedKeys, setRecentlyUpdatedKeys] = useState<Set<string>>(new Set());
   const [showBackupPrompt, setShowBackupPrompt] = useState(false);
@@ -339,21 +345,26 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     setUsers((data || []).map(mapUserRow));
   }, [canReadUsers]);
 
-  const refetchAnnouncements = useCallback(async (): Promise<void> => {
+const refetchAnnouncements = useCallback(async (): Promise<void> => {
     const limit = announcementsLimitRef.current;
-    const { data, error } = await supabase.rpc('get_announcements', { p_limit: limit });
-    if (error) {
-        console.error("refetchAnnouncements error:", error);
-        return;
+    setAnnouncementsLoading(true);
+    try {
+        const { data, error } = await supabase.rpc('get_announcements', { p_limit: limit });
+        if (error) {
+            console.error("refetchAnnouncements error:", error);
+            return;
+        }
+        const rows = (data || []) as {
+            id: string; title: string; content: string;
+            created_at: string; created_by: string; created_by_id: string;
+            read_by: string[]; total: number;
+        }[];
+        setAnnouncements(rows.map(mapAnnouncementRow));
+        setAnnouncementsTotal(rows.length > 0 ? rows[0].total : 0);
+    } finally {
+        setAnnouncementsLoading(false);
     }
-    const rows = (data || []) as {
-        id: string; title: string; content: string;
-        created_at: string; created_by: string; created_by_id: string;
-        read_by: string[]; total: number;
-    }[];
-    setAnnouncements(rows.map(mapAnnouncementRow));
-    setAnnouncementsTotal(rows.length > 0 ? rows[0].total : 0);
-  }, []);
+}, []);
 
   const loadMoreAnnouncements = useCallback(() => {
     announcementsLimitRef.current += ANNOUNCEMENTS_PAGE_SIZE;
@@ -380,6 +391,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         return;
     }
     setIsLoading(true);
+    setAnnouncementsLoading(true);
 
     const channels: RealtimeChannel[] = [];
 
@@ -435,6 +447,7 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             addToast("Không thể tải dữ liệu.", "error");
         } finally {
             setIsLoading(false);
+            setAnnouncementsLoading(false);
         }
     };
 
@@ -1194,11 +1207,49 @@ export const DataProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         const registrations = (data || []).map(mapArchivedRegistrationRow);
         return { registrations };
     }, [currentUser]);
+
+    const deleteArchivedRegistrations = useCallback(async (options: {
+        dateRange: { from: string, to: string },
+        classNames?: string[]
+    }): Promise<number> => {
+        const { dateRange, classNames } = options;
+        if (!dateRange.from || !dateRange.to) {
+            addToast("Vui lòng chọn cả ngày bắt đầu và ngày kết thúc.", "error");
+            return 0;
+        }
+        if (!canArchive()) { addToast("Bạn không có quyền xóa dữ liệu lưu trữ.", "error"); return 0; }
+        try {
+            let query = supabase
+                .from('archived_registrations')
+                .delete()
+                .gte('date', dateRange.from)
+                .lte('date', dateRange.to)
+                .select('id');
+            if (classNames && classNames.length > 0) query = query.in('class_name', classNames);
+
+            const { data, error } = await query;
+            if (error) throw error;
+
+            const deletedCount = (data || []).length;
+            await logAction('DELETE_ARCHIVE_DATA', {
+                from: dateRange.from,
+                to: dateRange.to,
+                count: deletedCount,
+                classNames: classNames || []
+            });
+            addToast(`Đã xóa ${deletedCount} mục dữ liệu lưu trữ.`, 'success');
+            return deletedCount;
+        } catch (error) {
+            console.error("deleteArchivedRegistrations error:", error);
+            addToast("Lỗi khi xóa dữ liệu lưu trữ.", "error");
+            return 0;
+        }
+    }, [addToast, logAction, canArchive]);
     
   const value = useMemo(() => ({
-    editingInfo, classes, users, announcements, unreadAnnouncementsCount, hasMoreAnnouncements, loadMoreAnnouncements, dataVersion, recentlyUpdatedKeys, showBackupPrompt, isAnnouncementRead,
-    addRegistrations, updateRegistrations, requestEdit, clearEditing, deleteRegistrations, deleteMultipleRegistrationsByDate, addClass, updateClass, deleteClass, getRegistrations, updateUser, deleteUser, approveUser, rejectUser, refreshUsers, addAnnouncement, updateAnnouncement, deleteAnnouncement, markAnnouncementsAsRead, getAuditLogs, deleteAuditLogs, exportData, dismissBackupPrompt, checkBackupNow: checkForBackupPrompt, archiveRegistrationsByMonth, getArchivedRegistrations, getRegisteredClasses
-  }), [editingInfo, classes, users, announcements, unreadAnnouncementsCount, hasMoreAnnouncements, loadMoreAnnouncements, dataVersion, recentlyUpdatedKeys, showBackupPrompt, isAnnouncementRead, addRegistrations, updateRegistrations, requestEdit, clearEditing, deleteRegistrations, deleteMultipleRegistrationsByDate, addClass, updateClass, deleteClass, getRegistrations, updateUser, deleteUser, approveUser, rejectUser, refreshUsers, addAnnouncement, updateAnnouncement, deleteAnnouncement, markAnnouncementsAsRead, getAuditLogs, deleteAuditLogs, exportData, dismissBackupPrompt, checkForBackupPrompt, archiveRegistrationsByMonth, getArchivedRegistrations, getRegisteredClasses]);
+    editingInfo, classes, users, announcements, announcementsLoading, unreadAnnouncementsCount, hasMoreAnnouncements, loadMoreAnnouncements, dataVersion, recentlyUpdatedKeys, showBackupPrompt, isAnnouncementRead,
+    addRegistrations, updateRegistrations, requestEdit, clearEditing, deleteRegistrations, deleteMultipleRegistrationsByDate, addClass, updateClass, deleteClass, getRegistrations, updateUser, deleteUser, approveUser, rejectUser, refreshUsers, addAnnouncement, updateAnnouncement, deleteAnnouncement, markAnnouncementsAsRead, getAuditLogs, deleteAuditLogs, exportData, dismissBackupPrompt, checkBackupNow: checkForBackupPrompt, archiveRegistrationsByMonth, getArchivedRegistrations, deleteArchivedRegistrations, getRegisteredClasses
+  }), [editingInfo, classes, users, announcements, announcementsLoading, unreadAnnouncementsCount, hasMoreAnnouncements, loadMoreAnnouncements, dataVersion, recentlyUpdatedKeys, showBackupPrompt, isAnnouncementRead, addRegistrations, updateRegistrations, requestEdit, clearEditing, deleteRegistrations, deleteMultipleRegistrationsByDate, addClass, updateClass, deleteClass, getRegistrations, updateUser, deleteUser, approveUser, rejectUser, refreshUsers, addAnnouncement, updateAnnouncement, deleteAnnouncement, markAnnouncementsAsRead, getAuditLogs, deleteAuditLogs, exportData, dismissBackupPrompt, checkForBackupPrompt, archiveRegistrationsByMonth, getArchivedRegistrations, deleteArchivedRegistrations, getRegisteredClasses]);
 
   return (
     <DataContext.Provider value={value}>

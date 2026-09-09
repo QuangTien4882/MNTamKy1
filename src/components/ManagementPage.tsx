@@ -10,7 +10,27 @@ const ArchiveManagementPage = lazy(() => import('./ArchiveManagementPage'));
 
 const ManagementPage: React.FC = () => {
     const { currentUser } = useAuth();
-    const [activeTab, setActiveTab] = useState<ManagementTab>(ManagementTab.Classes);
+    const [activeTab, setActiveTab] = useState<ManagementTab>(() => {
+        try {
+            const stored = localStorage.getItem('mn_management_tab_v1');
+            const isValid = stored && Object.values(ManagementTab).includes(stored as ManagementTab);
+            if (!isValid) return ManagementTab.Classes;
+            const restored = stored as ManagementTab;
+            const adminOnlyTab = restored === ManagementTab.AuditLogs || restored === ManagementTab.Archive;
+            if (adminOnlyTab && currentUser?.role !== Role.Admin) return ManagementTab.Classes;
+            return restored;
+        } catch {
+            return ManagementTab.Classes;
+        }
+    });
+
+    React.useEffect(() => {
+        try {
+            localStorage.setItem('mn_management_tab_v1', activeTab);
+        } catch {
+            // ignore quota/private-mode errors
+        }
+    }, [activeTab]);
     
     const TabButton: React.FC<{tab: ManagementTab, label: string}> = ({ tab, label }) => (
         <button

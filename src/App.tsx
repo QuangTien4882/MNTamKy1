@@ -1,4 +1,4 @@
-import React, { useState, Suspense, lazy } from 'react';
+import React, { useState, useEffect, Suspense, lazy } from 'react';
 import ToastContainer from './components/ToastContainer';
 import NotificationContainer from './components/NotificationContainer';
 import { DataProvider, useData } from './contexts/DataContext';
@@ -26,9 +26,66 @@ const AppContent: React.FC = () => {
   const { currentUser, authLoading } = useAuth();
   const { unreadAnnouncementsCount } = useData();
   const { isOffline } = useUI();
-  const [view, setView] = useState<View>(View.Dashboard);
-  const [activeTab, setActiveTab] = useState<Tab>(Tab.Daily);
+  const [view, setView] = useState<View>(() => {
+    try {
+      const stored = localStorage.getItem('mn_view_v1');
+      return stored && Object.values(View).includes(stored as View) ? stored as View : View.Dashboard;
+    } catch {
+      return View.Dashboard;
+    }
+  });
+  const [activeTab, setActiveTab] = useState<Tab>(() => {
+    try {
+      const stored = localStorage.getItem('mn_register_tab_v1');
+      return stored && Object.values(Tab).includes(stored as Tab) ? stored as Tab : Tab.Daily;
+    } catch {
+      return Tab.Daily;
+    }
+  });
   const { theme, toggleTheme } = useTheme();
+
+  useEffect(() => {
+    if (!currentUser) return;
+    try {
+      localStorage.setItem('mn_view_v1', view);
+    } catch {
+      // ignore quota/private-mode errors
+    }
+  }, [view, currentUser]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    try {
+      localStorage.setItem('mn_register_tab_v1', activeTab);
+    } catch {
+      // ignore quota/private-mode errors
+    }
+  }, [activeTab, currentUser]);
+
+  // If the restored view is not allowed for the user's role, fall back to Dashboard.
+  useEffect(() => {
+    if (!currentUser) return;
+    const allowed = getNavOrderForRole(currentUser.role);
+    if (!allowed.includes(view)) {
+      setView(View.Dashboard);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser, view]);
+
+  const getNavOrderForRole = (role: Role): View[] => {
+      switch (role) {
+          case Role.Admin:
+              return [View.Dashboard, View.Register, View.Announcements, View.List, View.Summary, View.Management];
+          case Role.BGH:
+              return [View.Dashboard, View.Announcements, View.List, View.Summary];
+          case Role.KT_CD:
+              return [View.Dashboard, View.Announcements, View.List, View.Summary];
+          case Role.GV:
+              return [View.Dashboard, View.Register, View.Announcements, View.List];
+          default:
+              return [];
+      }
+  };
 
   if (authLoading) {
     return (
@@ -104,21 +161,6 @@ const AppContent: React.FC = () => {
         )}
     </button>
   );
-
-  const getNavOrderForRole = (role: Role): View[] => {
-      switch (role) {
-          case Role.Admin:
-              return [View.Dashboard, View.Register, View.Announcements, View.List, View.Summary, View.Management];
-          case Role.BGH:
-              return [View.Dashboard, View.Announcements, View.List, View.Summary];
-          case Role.KT_CD:
-              return [View.Dashboard, View.Announcements, View.List, View.Summary];
-          case Role.GV:
-              return [View.Dashboard, View.Register, View.Announcements, View.List];
-          default:
-              return [];
-      }
-  };
 
   const navOrder = getNavOrderForRole(currentUser.role);
 

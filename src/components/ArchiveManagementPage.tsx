@@ -17,7 +17,7 @@ const LoadingSpinner = () => (
 
 
 const ArchiveManagementPage: React.FC = () => {
-    const { classes, getArchivedRegistrations, archiveRegistrationsByMonth, checkBackupNow } = useData();
+    const { classes, getArchivedRegistrations, archiveRegistrationsByMonth, deleteArchivedRegistrations, checkBackupNow } = useData();
     const { addToast } = useUI();
     
     // State for Archiving
@@ -34,6 +34,8 @@ const ArchiveManagementPage: React.FC = () => {
     const [selectedClasses, setSelectedClasses] = useState<string[]>([]);
     const [archivedData, setArchivedData] = useState<SummaryData[]>([]);
     const [isFetchingArchive, setIsFetchingArchive] = useState(false);
+    const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+    const [isDeletingArchive, setIsDeletingArchive] = useState(false);
     
     // State for Settings
     const [reminderDay, setReminderDay] = useState('1');
@@ -131,6 +133,26 @@ const ArchiveManagementPage: React.FC = () => {
         setIsFetchingArchive(false);
     }
 
+    const handleDeleteArchive = async () => {
+        if (!archiveFilter.from || !archiveFilter.to) {
+            addToast("Vui lòng chọn cả ngày bắt đầu và ngày kết thúc.", "error");
+            return;
+        }
+        setIsDeletingArchive(true);
+        try {
+            const deletedCount = await deleteArchivedRegistrations({
+                dateRange: archiveFilter,
+                classNames: selectedClasses.length > 0 ? selectedClasses : undefined
+            });
+            if (deletedCount > 0) {
+                setArchivedData([]);
+                setIsDeleteConfirmOpen(false);
+            }
+        } finally {
+            setIsDeletingArchive(false);
+        }
+    }
+
     return (
         <div className="space-y-8">
              {isArchiveConfirmOpen && (
@@ -146,6 +168,24 @@ const ArchiveManagementPage: React.FC = () => {
                         <div className="mt-6 flex justify-end space-x-3">
                             <button onClick={() => setIsArchiveConfirmOpen(false)} className="px-4 py-2 text-sm font-medium rounded-md text-gray-700 bg-gray-100 hover:bg-gray-200 dark:bg-gray-600 dark:text-gray-200 dark:hover:bg-gray-500">Hủy</button>
                             <button onClick={handleArchive} disabled={isArchiving} className="px-4 py-2 text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700 disabled:bg-red-400 flex items-center">{isArchiving ? <LoadingSpinner /> : 'Xác nhận & Lưu trữ'}</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {isDeleteConfirmOpen && (
+                <div className="fixed inset-0 bg-black bg-opacity-60 flex justify-center items-center z-50">
+                    <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-lg m-4 modal-content">
+                        <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">Xác nhận Xóa dữ liệu lưu trữ</h3>
+                        <div className="mt-2 text-sm text-gray-600 dark:text-gray-300">
+                            <p>Bạn có chắc chắn muốn <strong className="text-red-600 dark:text-red-400">xóa vĩnh viễn</strong> toàn bộ dữ liệu lưu trữ trong khoảng thời gian từ <span className="font-semibold">{archiveFilter.from}</span> đến <span className="font-semibold">{archiveFilter.to}</span>{selectedClasses.length > 0 && <> thuộc {selectedClasses.length} lớp đang chọn</>}?</p>
+                            <p className="mt-2 text-red-600 dark:text-red-400 font-semibold">
+                                Cảnh báo: Hành động này <strong className="underline">không thể hoàn tác</strong>. Dữ liệu đã xóa sẽ không thể xem lại được nữa.
+                            </p>
+                        </div>
+                        <div className="mt-6 flex justify-end space-x-3">
+                            <button onClick={() => setIsDeleteConfirmOpen(false)} disabled={isDeletingArchive} className="px-4 py-2 text-sm font-medium rounded-md text-gray-700 bg-gray-100 hover:bg-gray-200 dark:bg-gray-600 dark:text-gray-200 dark:hover:bg-gray-500">Hủy</button>
+                            <button onClick={handleDeleteArchive} disabled={isDeletingArchive} className="px-4 py-2 text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700 disabled:bg-red-400 flex items-center">{isDeletingArchive ? <LoadingSpinner /> : 'Xóa vĩnh viễn'}</button>
                         </div>
                     </div>
                 </div>
@@ -233,8 +273,9 @@ const ArchiveManagementPage: React.FC = () => {
                             <ClassFilterDropdown classes={classes} selectedClasses={selectedClasses} onSelectionChange={setSelectedClasses} />
                         </div>
                     </div>
-                     <div className="flex justify-end">
+                     <div className="flex justify-end gap-3">
                         <button onClick={handleFetchArchive} disabled={isFetchingArchive} className="px-6 py-2 font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 flex items-center justify-center w-32">{isFetchingArchive ? <LoadingSpinner/> : 'Xem báo cáo'}</button>
+                        <button onClick={() => setIsDeleteConfirmOpen(true)} disabled={!archiveFilter.from || !archiveFilter.to || isDeletingArchive} className="px-6 py-2 font-medium rounded-md text-white bg-red-600 hover:bg-red-700 disabled:bg-red-400 flex items-center justify-center w-44">{isDeletingArchive ? <LoadingSpinner/> : 'Xóa dữ liệu đã lưu trữ'}</button>
                     </div>
                 </div>
                 <div className="mt-6 bg-white dark:bg-gray-800 md:shadow-lg rounded-lg overflow-hidden">

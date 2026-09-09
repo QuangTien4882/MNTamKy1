@@ -86,7 +86,7 @@ export type AuditLogAction =
     | 'CREATE_CLASS' | 'UPDATE_CLASS' | 'DELETE_CLASS'
     | 'CREATE_USER' | 'UPDATE_USER' | 'DELETE_USER'
     | 'CREATE_ANNOUNCEMENT' | 'UPDATE_ANNOUNCEMENT' | 'DELETE_ANNOUNCEMENT'
-    | 'ARCHIVE_DATA';
+    | 'ARCHIVE_DATA' | 'DELETE_ARCHIVE_DATA';
 
 export interface AuditLog {
     id: string;

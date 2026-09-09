@@ -63,9 +63,8 @@ const AnnouncementModal: React.FC<{
 };
 
 const AnnouncementsPage: React.FC = () => {
-    const { announcements, hasMoreAnnouncements, loadMoreAnnouncements, addAnnouncement, updateAnnouncement, deleteAnnouncement, markAnnouncementsAsRead, isAnnouncementRead } = useData();
+    const { announcements, announcementsLoading, hasMoreAnnouncements, loadMoreAnnouncements, addAnnouncement, updateAnnouncement, deleteAnnouncement, markAnnouncementsAsRead, isAnnouncementRead } = useData();
     const { currentUser } = useAuth();
-    const [isPageLoading, setIsPageLoading] = useState(() => announcements.length === 0);
     const [isSaving, setIsSaving] = useState(false);
     const [isLoadingMore, setIsLoadingMore] = useState(false);
 
@@ -136,10 +135,6 @@ const AnnouncementsPage: React.FC = () => {
     }, [announcements, hiddenAnnouncements]);
 
 
-    useEffect(() => {
-        setIsPageLoading(announcements.length === 0);
-    }, [announcements]);
-
     const handleSave = async (data: Omit<Announcement, 'id' | 'createdAt' | 'createdBy' | 'createdById' | 'readBy'>) => {
         setIsSaving(true);
         try {
@@ -193,7 +188,7 @@ const AnnouncementsPage: React.FC = () => {
                 )}
             </div>
 
-            {isPageLoading ? (
+            {announcementsLoading && announcements.length === 0 ? (
                 <div className="text-center p-8"><LoadingSpinner size="h-8 w-8" color="text-teal-600" /></div>
             ) : visibleAnnouncements.length === 0 && hiddenCount === 0 ? (
                 <p className="text-center text-gray-500 dark:text-gray-400 py-10">Chưa có thông báo nào.</p>
