@@ -198,11 +198,17 @@ export const useMultiDayRegistrationForm = ({ setActiveDate, onSuccess }: UseMul
             resetForm();
             onSuccess?.();
         } catch (error: any) {
-             if (String(error?.message ?? '').includes('STALE_DATA')) {
-                resetForm();
+            if (String(error?.message ?? '').includes('STALE_DATA')) {
+                // Keep the typed values; only refresh the overwrite baseline so
+                // re-saving compares against the newest data.
+                if (overwriteConfirmation) {
+                    const dates = Array.from(new Set(overwriteConfirmation.data.map(d => d.date)));
+                    const { registrations: fresh } = await getRegistrations({ classNames: [className], dates, getAll: true });
+                    setOverwriteConfirmation(prev => prev ? { ...prev, existing: fresh } : prev);
+                }
             }
         }
-    }, [addRegistrations, updateRegistrations, className, addToast, resetForm, overwriteConfirmation, onSuccess]);
+    }, [addRegistrations, updateRegistrations, className, addToast, resetForm, overwriteConfirmation, onSuccess, getRegistrations]);
 
     return {
         state: {

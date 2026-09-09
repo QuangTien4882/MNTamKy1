@@ -37,6 +37,9 @@ as $$
 declare
   v_student_count integer;
 begin
+  if new.count < 0 then
+    raise exception 'Số lượng suất ăn không thể là số âm.' using errcode = 'P0001';
+  end if;
   if new.meal_type in ('Bữa trưa (trẻ)', 'Bữa mai (trẻ)') then
     select coalesce(student_count, 0) into v_student_count
     from public.classes
@@ -54,6 +57,26 @@ create trigger enforce_registration_capacity_trigger
 before insert or update on public.registrations
 for each row
 execute function public.enforce_registration_capacity();
+
+-- Always refresh updated_at on writes so the client's staleness check works on
+-- every code path (including direct upserts), not only the RPC-managed ones.
+create or replace function public.set_registrations_updated_at()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  new.updated_at := now();
+  return new;
+end;
+$$;
+
+drop trigger if exists set_registrations_updated_at_trigger on public.registrations;
+create trigger set_registrations_updated_at_trigger
+before update on public.registrations
+for each row
+execute function public.set_registrations_updated_at();
 
 -- Auto-create a profile whenever an auth user is created.
 -- Idempotent: if a profile already exists (duplicate/retry), it just syncs the
@@ -215,6 +238,19 @@ as $$
   select coalesce((select role from public.profiles where id = auth.uid()), '') = 'KT & CD';
 $$;
 
+-- "Chưa duyệt" accounts registered on the login page must NOT read internal
+-- data (announcements, class lists) until an admin approves them.
+create or replace function public.is_approved()
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select auth.uid() is not null
+     and coalesce((select role from public.profiles where id = auth.uid()), '') <> 'Chưa duyệt';
+$$;
+
 -- Prevent non-admins from changing permission-relevant profile fields.
 -- Users may update their own display_name (e.g. via signUp) but never role,
 -- assigned_class or email.
@@ -294,7 +330,7 @@ alter table public.archived_registrations enable row level security;
 -- Read access is role-scoped so teachers only see data of their own class,
 -- while Admin / BGH / KT&CD see everything relevant to their screens.
 drop policy if exists "allow_read_classes" on public.classes;
-create policy "allow_read_classes" on public.classes for select using (auth.role() = 'authenticated');
+create policy "allow_read_classes" on public.classes for select using (public.is_approved());
 drop policy if exists "allow_read_profiles" on public.profiles;
 create policy "allow_read_profiles" on public.profiles for select using (public.is_admin() or public.is_bgh());
 drop policy if exists "allow_read_own_profile" on public.profiles;
@@ -412,6 +448,9 @@ begin
   if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'announcements') then
     alter publication supabase_realtime add table public.announcements;
   end if;
+  if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'registrations') then
+    alter publication supabase_realtime add table public.registrations;
+  end if;
 end$$;
 
 -- ============================================
@@ -466,23 +505,69 @@ revoke execute on function public.delete_user(uuid) from public;
 grant execute on function public.delete_user(uuid) to authenticated;
 
 -- ============================================
+-- RPC: Admin resets another user's password.
+-- Only admins can call it. The new password is bcrypt-hashed with pgcrypto,
+-- which is exactly the format Supabase Auth stores in auth.users.
+-- ============================================
+create or replace function public.admin_reset_password(p_user_id uuid, p_new_password text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not public.is_admin() then
+    raise exception 'Permission denied: admin only' using errcode = '42501';
+  end if;
+  if p_new_password is null or length(p_new_password) < 6 then
+    raise exception 'Mật khẩu mới phải có ít nhất 6 ký tự.' using errcode = '22023';
+  end if;
+  if not exists (select 1 from public.profiles where id = p_user_id) then
+    raise exception 'Không tìm thấy người dùng.' using errcode = 'P0002';
+  end if;
+
+  update auth.users
+  set encrypted_password = public.crypt(p_new_password, public.gen_salt('bf')),
+      updated_at = now()
+  where id = p_user_id;
+
+  if not found then
+    raise exception 'Không tìm thấy người dùng.' using errcode = 'P0002';
+  end if;
+
+  update public.profiles
+  set updated_at = now()
+  where id = p_user_id;
+end;
+$$;
+
+revoke execute on function public.admin_reset_password(uuid, text) from public;
+grant execute on function public.admin_reset_password(uuid, text) to authenticated;
+
+-- ============================================
 -- RPC: Classes already registered for a date (any authenticated user)
 -- Returns only class names, so teachers can see the summary count
 -- without being able to read other classes' meal counts.
 -- ============================================
 create or replace function public.get_registered_classes(p_date date)
 returns table(class_name text)
-language sql
+language plpgsql
 security definer
 set search_path = public
 stable
 as $$
-  select r.class_name
-  from public.registrations r
-  where r.date = p_date
-    and r.count > 0
-    and r.meal_type in ('Bữa trưa (trẻ)', 'Bữa trưa (GV)')
-  group by r.class_name;
+begin
+  if not public.is_approved() then
+    raise exception 'Tài khoản chưa được duyệt.' using errcode = '42501';
+  end if;
+  return query
+    select r.class_name
+    from public.registrations r
+    where r.date = p_date
+      and r.count > 0
+      and r.meal_type in ('Bữa trưa (trẻ)', 'Bữa trưa (GV)')
+    group by r.class_name;
+end;
 $$;
 
 revoke execute on function public.get_registered_classes(date) from public;
@@ -569,30 +654,37 @@ begin
     end if;
   end loop;
 
-  -- Upserts (rows created or re-created during the edit).
-  for v_class_name, v_date, v_meal, v_count, v_rid, v_rname in
-    select u.class_name, u.date, u.meal_type, u.count, u.registered_by_id, u.registered_by
+  -- Always attribute the write to the acting user (never client-supplied text),
+  -- so the "who entered/changed this" trail cannot be forged on the client.
+  v_rid := auth.uid();
+  select coalesce(display_name, '') into v_rname
+  from public.profiles
+  where id = v_rid;
+
+  -- Upserts (rows created or re-created during the edit). If the same
+  -- class/date/meal already exists (e.g. created by someone else since the
+  -- client loaded), fail loudly instead of silently overwriting that user.
+  for v_class_name, v_date, v_meal, v_count in
+    select u.class_name, u.date, u.meal_type, u.count
     from jsonb_to_recordset(coalesce(p_upserts, '[]'::jsonb))
-      as u(class_name text, date date, meal_type text, count integer,
-           registered_by_id uuid, registered_by text)
+      as u(class_name text, date date, meal_type text, count integer)
   loop
     insert into public.registrations (class_name, date, meal_type, count, registered_by_id, registered_by, updated_at)
     values (v_class_name, v_date, v_meal, v_count, v_rid, v_rname, v_now)
-    on conflict (class_name, date, meal_type) do update
-      set count = excluded.count,
-          registered_by_id = excluded.registered_by_id,
-          registered_by = excluded.registered_by,
-          updated_at = v_now;
+    on conflict (class_name, date, meal_type) do nothing;
+    if not found then
+      raise exception 'STALE_DATA' using errcode = 'P0001';
+    end if;
   end loop;
 
   -- Updates of existing rows.
   update public.registrations r
   set count = u.count,
-      registered_by_id = coalesce(u.registered_by_id, r.registered_by_id),
-      registered_by = coalesce(u.registered_by, r.registered_by),
+      registered_by_id = v_rid,
+      registered_by = v_rname,
       updated_at = v_now
   from jsonb_to_recordset(coalesce(p_updates, '[]'::jsonb))
-    as u(id uuid, count integer, registered_by_id uuid, registered_by text)
+    as u(id uuid, count integer)
   where r.id = u.id;
 
   -- Deletes.
@@ -671,6 +763,9 @@ as $$
 declare
   v_total bigint;
 begin
+  if not public.is_approved() then
+    raise exception 'Tài khoản chưa được duyệt.' using errcode = '42501';
+  end if;
   select count(*) into v_total from public.announcements;
 
   if public.is_admin() or public.is_bgh() then
@@ -724,6 +819,9 @@ declare
 begin
   if v_uid is null then
     raise exception 'Not authenticated' using errcode = '42501';
+  end if;
+  if not public.is_approved() then
+    raise exception 'Tài khoản chưa được duyệt.' using errcode = '42501';
   end if;
   update public.announcements
   set read_by = (

@@ -4,6 +4,7 @@ import { useData } from '../contexts/DataContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useUI } from '../contexts/UIContext';
 import CustomDatePicker from './CustomDatePicker';
+import MonthPicker from './MonthPicker';
 import ClassFilterDropdown from './ClassFilterDropdown';
 import SummaryTableRow from './SummaryTableRow';
 import SummaryCard from './SummaryCard';
@@ -33,6 +34,13 @@ const getMonthDateRange = () => {
     const from = new Date(today.getFullYear(), today.getMonth(), 1);
     const to = new Date(today.getFullYear(), today.getMonth() + 1, 0);
     return { from: formatDate(from), to: formatDate(to) };
+}
+
+const getYearMonthRange = (yearMonth: string) => {
+    const [year, month] = yearMonth.split('-').map(Number);
+    const from = formatDate(new Date(year, month - 1, 1));
+    const to = formatDate(new Date(year, month, 0));
+    return { from, to };
 }
 
 const EmptyState: React.FC<{onRegisterClick: () => void}> = ({onRegisterClick}) => (
@@ -112,6 +120,8 @@ const SummaryPage: React.FC<{setView: (view: View) => void}> = ({setView}) => {
   
   const [registrations, setRegistrations] = useState<MealRegistration[]>([]);
   const [reportTotals, setReportTotals] = useState<Record<MealType, number> | null>(null);
+  const [perClassTotals, setPerClassTotals] = useState<Record<string, Record<MealType, number>> | null>(null);
+  const [monthFilter, setMonthFilter] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [isFetchingMore, setIsFetchingMore] = useState(false);
   
@@ -182,6 +192,7 @@ const SummaryPage: React.FC<{setView: (view: View) => void}> = ({setView}) => {
     const fetchTotals = async () => {
         if (!selectedClasses.length || !classes.length) {
             setReportTotals(null);
+            setPerClassTotals(null);
             return;
         }
 
@@ -196,13 +207,20 @@ const SummaryPage: React.FC<{setView: (view: View) => void}> = ({setView}) => {
             acc[reg.mealType] = (acc[reg.mealType] || 0) + reg.count;
             return acc;
         }, {} as Record<MealType, number>);
+        const byClass = allRegs.reduce((acc, reg) => {
+            acc[reg.className] = acc[reg.className] || { [MealType.KidsBreakfast]: 0, [MealType.KidsLunch]: 0, [MealType.TeachersLunch]: 0 };
+            acc[reg.className][reg.mealType] += reg.count;
+            return acc;
+        }, {} as Record<string, Record<MealType, number>>);
         setReportTotals(totals);
+        setPerClassTotals(byClass);
     };
     
     if (classes.length > 0 && selectedClasses.length > 0) {
         fetchTotals();
     } else if (classes.length > 0 && selectedClasses.length === 0) {
         setReportTotals(null);
+        setPerClassTotals(null);
     }
   }, [selectedClasses, dateRange, getRegistrations, dataVersion, classes]);
 
@@ -498,16 +516,62 @@ const SummaryPage: React.FC<{setView: (view: View) => void}> = ({setView}) => {
             </div>
         </div>
         <div className="flex flex-wrap gap-2 pt-2 border-t dark:border-gray-600">
-            <button onClick={() => setDateRange({from: '', to: ''})} className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-200 rounded-full hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600">Tất cả</button>
-            <button onClick={() => setDateRange(getWeekDateRange())} className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-200 rounded-full hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600">Tuần này</button>
-            <button onClick={() => setDateRange(getMonthDateRange())} className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-200 rounded-full hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600">Tháng này</button>
+            <button onClick={() => { setDateRange({from: '', to: ''}); setMonthFilter(''); }} className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-200 rounded-full hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600">Tất cả</button>
+            <button onClick={() => { setDateRange(getWeekDateRange()); setMonthFilter(''); }} className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-200 rounded-full hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600">Tuần này</button>
+            <button onClick={() => { setDateRange(getMonthDateRange()); setMonthFilter(''); }} className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-200 rounded-full hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600">Tháng này</button>
+            <div className="flex items-center gap-2 text-xs font-medium text-gray-700 dark:text-gray-300">
+                Chọn tháng
+                <MonthPicker value={monthFilter} onChange={v => { setMonthFilter(v); setDateRange(getYearMonthRange(v)); }} className="w-44" />
+            </div>
         </div>
       </div>
 
        <div className="mt-8">
+        {perClassTotals && (
+            <div className="mb-6 bg-white dark:bg-gray-800 rounded-lg overflow-hidden border dark:border-gray-700">
+                <div className="px-6 py-4 border-b dark:border-gray-700">
+                    <h3 className="text-lg font-bold text-gray-800 dark:text-gray-100">Tổng hợp theo lớp</h3>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                        {dateRange.from || dateRange.to
+                            ? `Từ ngày ${dateRange.from ? new Date(dateRange.from + 'T00:00:00').toLocaleDateString('vi-VN') : 'đầu'} đến ngày ${dateRange.to ? new Date(dateRange.to + 'T00:00:00').toLocaleDateString('vi-VN') : 'cuối'}`
+                            : 'Toàn bộ thời gian'}
+                    </p>
+                </div>
+                <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                        <thead className="bg-gray-50 dark:bg-gray-700">
+                            <tr>
+                                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">Lớp</th>
+                                <th scope="col" className="px-6 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{MealType.KidsBreakfast}</th>
+                                <th scope="col" className="px-6 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{MealType.KidsLunch}</th>
+                                <th scope="col" className="px-6 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">{MealType.TeachersLunch}</th>
+                                <th scope="col" className="px-6 py-3 text-center text-xs font-medium text-gray-500 dark:text-gray-300 uppercase">Tổng cộng</th>
+                            </tr>
+                        </thead>
+                        <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+                            {classes.map(c => {
+                                if (!perClassTotals[c.name]) return null;
+                                const t = perClassTotals[c.name];
+                                const rowTotal = (t[MealType.KidsBreakfast] || 0) + (t[MealType.KidsLunch] || 0) + (t[MealType.TeachersLunch] || 0);
+                                return (
+                                    <tr key={c.name}>
+                                        <td className="px-6 py-3 text-sm font-medium text-gray-800 dark:text-gray-100">{c.name}</td>
+                                        <td className="px-6 py-3 text-center text-sm text-gray-600 dark:text-gray-300">{t[MealType.KidsBreakfast]?.toLocaleString('vi-VN') || 0}</td>
+                                        <td className="px-6 py-3 text-center text-sm text-gray-600 dark:text-gray-300">{t[MealType.KidsLunch]?.toLocaleString('vi-VN') || 0}</td>
+                                        <td className="px-6 py-3 text-center text-sm text-gray-600 dark:text-gray-300">{t[MealType.TeachersLunch]?.toLocaleString('vi-VN') || 0}</td>
+                                        <td className="px-6 py-3 text-center text-sm font-bold text-gray-800 dark:text-gray-100">{rowTotal.toLocaleString('vi-VN')}</td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        )}
         <div className="flex justify-between items-center mb-4">
             <h3 className="text-xl font-bold text-gray-800 dark:text-gray-100">Kết quả chi tiết ({totalRecords} dòng)</h3>
              <div className="flex gap-2 no-print">
+                <button onClick={() => window.print()} disabled={totalRecords === 0} className="flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-gray-600 hover:bg-gray-700 disabled:bg-gray-400">In báo cáo</button>
                 <button onClick={() => handleExport('pdf')} disabled={totalRecords === 0} className="flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400">PDF</button>
                 <button onClick={() => handleExport('csv')} disabled={totalRecords === 0} className="flex items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 disabled:bg-gray-400">Excel</button>
              </div>

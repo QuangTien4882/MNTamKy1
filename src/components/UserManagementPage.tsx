@@ -21,7 +21,7 @@ const getRoleBadgeClass = (role: Role) => {
 };
 
 const UserManagementPage: React.FC = () => {
-    const { classes, users, approveUser, rejectUser, updateUser, deleteUser } = useData();
+    const { classes, users, approveUser, rejectUser, updateUser, deleteUser, resetUserPassword } = useData();
     const { isLoading, addToast } = useUI();
 
     const [searchTerm, setSearchTerm] = useState('');
@@ -32,6 +32,9 @@ const UserManagementPage: React.FC = () => {
     const [approvingUser, setApprovingUser] = useState<User | null>(null);
     const [approveClass, setApproveClass] = useState('');
     const [approving, setApproving] = useState(false);
+    const [resetPassUser, setResetPassUser] = useState<User | null>(null);
+    const [newPassword, setNewPassword] = useState('');
+    const [resetting, setResetting] = useState(false);
 
     const modalRef = useRef<HTMLDivElement>(null);
     const triggerRef = useRef<HTMLElement | null>(null);
@@ -48,7 +51,7 @@ const UserManagementPage: React.FC = () => {
     
     // Accessibility: Focus trap for modals
     useEffect(() => {
-        const isModalOpen = !!editingUser || !!deletingUser || !!confirmReject || !!approvingUser;
+        const isModalOpen = !!editingUser || !!deletingUser || !!confirmReject || !!approvingUser || !!resetPassUser;
         if (isModalOpen && modalRef.current) {
             triggerRef.current = document.activeElement as HTMLElement;
             // FIX: Replaced generic type argument on `querySelectorAll` with a type assertion to fix the "Untyped function calls may not accept type arguments" error.
@@ -81,7 +84,7 @@ const UserManagementPage: React.FC = () => {
                 triggerRef.current?.focus();
             };
         }
-    }, [editingUser, deletingUser, confirmReject, approvingUser]);
+    }, [editingUser, deletingUser, confirmReject, approvingUser, resetPassUser]);
 
     const filteredUsers = useMemo(() =>
         users.filter(u =>
@@ -123,6 +126,21 @@ const UserManagementPage: React.FC = () => {
         if(deletingUser) {
             await deleteUser(deletingUser.id);
             setDeletingUser(null);
+        }
+    }
+
+    const handleResetPassword = async () => {
+        if (!resetPassUser) return;
+        if (newPassword.length < 6) {
+            addToast('Mật khẩu mới phải có ít nhất 6 ký tự.', 'error');
+            return;
+        }
+        setResetting(true);
+        const success = await resetUserPassword(resetPassUser.id, newPassword);
+        setResetting(false);
+        if (success) {
+            setResetPassUser(null);
+            setNewPassword('');
         }
     }
 
@@ -236,6 +254,36 @@ const UserManagementPage: React.FC = () => {
                     </div>
                 </div>
             )}
+            {resetPassUser && (
+                <div className="fixed inset-0 bg-black bg-opacity-60 flex justify-center items-center z-50">
+                    <div ref={modalRef} role="dialog" aria-modal="true" aria-labelledby="reset-password-title" className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-md m-4 modal-content">
+                        <h3 id="reset-password-title" className="text-lg font-bold text-gray-900 dark:text-gray-100">Đặt lại mật khẩu</h3>
+                        <p className="mt-2 text-sm text-gray-600 dark:text-gray-300">
+                            Đặt mật khẩu mới cho <span className="font-semibold">{resetPassUser.displayName}</span> ({resetPassUser.email}). Người dùng sẽ dùng mật khẩu mới này để đăng nhập lần sau.
+                        </p>
+                        <div className="mt-4">
+                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Mật khẩu mới <span className="text-red-600">*</span></label>
+                            <input
+                                type="text"
+                                value={newPassword}
+                                onChange={e => setNewPassword(e.target.value)}
+                                placeholder="Tối thiểu 6 ký tự"
+                                className="mt-1 block w-full px-3 py-2 bg-white dark:bg-gray-700 dark:text-white border border-gray-300 dark:border-gray-600 rounded-md"
+                            />
+                        </div>
+                        <div className="mt-6 flex justify-end space-x-3">
+                            <button onClick={() => { setResetPassUser(null); setNewPassword(''); }} className="px-4 py-2 text-sm font-medium rounded-md text-gray-700 bg-gray-100 hover:bg-gray-200 dark:bg-gray-600 dark:text-gray-200 dark:hover:bg-gray-500">Hủy</button>
+                            <button
+                                onClick={handleResetPassword}
+                                disabled={resetting || newPassword.length < 6}
+                                className="px-4 py-2 text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700 disabled:opacity-50"
+                            >
+                                {resetting ? 'Đang lưu...' : 'Đặt lại mật khẩu'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             <div>
                 <h2 className="text-2xl font-bold text-gray-800 dark:text-gray-100">Quản lý người dùng</h2>
@@ -305,6 +353,7 @@ const UserManagementPage: React.FC = () => {
                                                 ) : (
                                                     <>
                                                         <button onClick={() => setEditingUser(user)} className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-200">Sửa</button>
+                                                        <button onClick={() => { setNewPassword(''); setResetPassUser(user); }} className="text-amber-600 hover:text-amber-800 dark:text-amber-400 dark:hover:text-amber-200">Mật khẩu</button>
                                                         <button onClick={() => setDeletingUser(user)} className="text-red-600 hover:text-red-800 dark:text-red-400 dark:hover:text-red-200">Xóa</button>
                                                     </>
                                                 )}

@@ -44,7 +44,8 @@ input[type=number] { -moz-appearance: textfield; }
 button:active:not(:disabled), [role="button"]:active:not(:disabled) { transform: scale(0.98); transition: transform 0.1s; }
 *:focus-visible { outline: 2px solid #2dd4bf !important; outline-offset: 2px !important; border-radius: 4px; }
 main.pb-offline-banner { padding-bottom: 7rem; }
-.mobile-nav.pb-offline-banner { bottom: 32px; }
+.mobile-nav { padding-bottom: env(safe-area-inset-bottom); }
+.mobile-nav.pb-offline-banner { bottom: calc(32px + env(safe-area-inset-bottom)); }
 .hide-scrollbar::-webkit-scrollbar { display: none; }
 .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 .mobile-card-view { display: none; }

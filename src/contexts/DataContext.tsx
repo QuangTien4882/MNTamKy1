@@ -47,6 +47,7 @@ interface DataContextType {
   deleteUser: (userId: string) => Promise<void>;
   approveUser: (userId: string, role: Role, assignedClass: string) => Promise<boolean>;
   rejectUser: (userId: string) => Promise<boolean>;
+  resetUserPassword: (userId: string, newPassword: string) => Promise<boolean>;
   refreshUsers: () => Promise<void>;
   addAnnouncement: (data: Omit<Announcement, 'id' | 'createdAt' | 'createdBy' | 'createdById' | 'readBy'>) => Promise<boolean>;
   updateAnnouncement: (id: string, data: Partial<Omit<Announcement, 'id'>>) => Promise<boolean>;
@@ -381,7 +382,7 @@ const refetchAnnouncements = useCallback(async (): Promise<void> => {
     };
   };
 
-  // Realtime subscriptions for classes, users, announcements
+  // Realtime subscriptions for classes, users, announcements, registrations
   useEffect(() => {
     if (!currentUser) {
         setClasses([]);
@@ -477,6 +478,17 @@ const refetchAnnouncements = useCallback(async (): Promise<void> => {
         .subscribe();
     channels.push(announcementChannel);
 
+    // Registration rows change frequently (multiple users on the same day); a
+    // change made by anyone else refetches the lists/summaries so no screen
+    // shows stale numbers. Realtime applies RLS, so users only receive the
+    // rows they are allowed to read.
+    const onRegistrationsChange = debounced(async () => { triggerRefetch(); });
+    const registrationsChannel = supabase
+        .channel('registrations-channel')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'registrations' }, () => { onRegistrationsChange(); })
+        .subscribe();
+    channels.push(registrationsChannel);
+
     return () => {
         channels.forEach(ch => supabase.removeChannel(ch));
     };
@@ -525,22 +537,16 @@ const refetchAnnouncements = useCallback(async (): Promise<void> => {
       const toUpsert = newRegistrations
           .filter(r => r.count > 0)
           .map(r => ({ class_name: r.className, date: r.date, meal_type: r.mealType, count: r.count, ...userInfo }));
-      const toDelete = newRegistrations.filter(r => r.count <= 0);
 
+      // Save atomically through the RPC so a row created by someone else in the
+      // meantime fails loudly (STALE_DATA) instead of being silently overwritten.
       if (toUpsert.length > 0) {
-        const { error } = await supabase.from('registrations').upsert(
-          toUpsert,
-          { onConflict: 'class_name,date,meal_type' }
-        );
-        if (error) throw error;
-      }
-
-      for (const del of toDelete) {
-        const { error } = await supabase.from('registrations')
-          .delete()
-          .eq('class_name', del.className)
-          .eq('date', del.date)
-          .eq('meal_type', del.mealType);
+        const { error } = await supabase.rpc('save_registrations', {
+          p_updates: [],
+          p_upserts: toUpsert,
+          p_delete_ids: [],
+          p_originals: [],
+        });
         if (error) throw error;
       }
 
@@ -549,8 +555,12 @@ const refetchAnnouncements = useCallback(async (): Promise<void> => {
       triggerRefetch();
     } catch (error) {
       console.error("Failed to save registrations", error);
-      const detail = error instanceof Error ? error.message : String(error);
-      addToast(`Lỗi khi lưu đăng ký${detail ? `: ${detail}` : '.'}`, "error");
+      const msg = error instanceof Error ? error.message : String(error);
+      if (msg === 'STALE_DATA' || msg.includes('STALE_DATA')) {
+        addToast('Dữ liệu vừa được người khác cập nhật. Vui lòng thử lại để xem thông tin mới nhất.', 'error');
+      } else {
+        addToast(`Lỗi khi lưu đăng ký${msg ? `: ${msg}` : '.'}`, "error");
+      }
       throw error; // rethrow so callers never show a success toast on failure
     }
   }, [addToast, currentUser, logAction, markRecentlyUpdated, triggerRefetch, findOverCapacity]);
@@ -612,11 +622,19 @@ const refetchAnnouncements = useCallback(async (): Promise<void> => {
 
         const hasWork = updateRows.length > 0 || upsertRows.length > 0 || deleteIds.length > 0;
         if (hasWork) {
+            // Only rows this user actually changed take part in the staleness
+            // check, so another user editing a different meal/row on the same
+            // date no longer blocks this save.
+            const affectedIds = new Set<string>([...updateRows.map(u => u.id), ...deleteIds]);
+            const originalsToCheck = originals
+                .filter(o => affectedIds.has(o.id))
+                .map(o => ({ id: o.id, updated_at: o.updatedAt ? new Date(o.updatedAt).toISOString() : null }));
+
             const { error } = await supabase.rpc('save_registrations', {
                 p_updates: updateRows,
                 p_upserts: upsertRows,
                 p_delete_ids: deleteIds,
-                p_originals: originals.map(o => ({ id: o.id, updated_at: o.updatedAt ? new Date(o.updatedAt).toISOString() : null })),
+                p_originals: originalsToCheck,
             });
             if (error) throw error;
         }
@@ -746,7 +764,28 @@ const refetchAnnouncements = useCallback(async (): Promise<void> => {
                 getAll: true
             });
 
-            const dataByDateAndClass = allRegistrations.reduce((acc: Record<string, ExportableRow>, reg) => {
+            // Archived rows live in a separate table. Include them for admins so
+            // backups/reports of already-processed periods are not exported empty.
+            let archivedRegistrations: MealRegistration[] = [];
+            if (currentUser?.role === Role.Admin) {
+                try {
+                    let archiveQuery = supabase.from('archived_registrations').select('*');
+                    if (dateRange.from && dateRange.to) {
+                        archiveQuery = archiveQuery.gte('date', dateRange.from).lte('date', dateRange.to);
+                    }
+                    if (classNames.length > 0) archiveQuery = archiveQuery.in('class_name', classNames);
+                    const { data, error } = await archiveQuery;
+                    if (error) {
+                        console.error("exportData archived query error:", error);
+                    } else {
+                        archivedRegistrations = (data || []).map(mapArchivedRegistrationRow);
+                    }
+                } catch (err) {
+                    console.error("exportData archived query exception:", err);
+                }
+            }
+
+            const dataByDateAndClass = [...allRegistrations, ...archivedRegistrations].reduce((acc: Record<string, ExportableRow>, reg) => {
                 const key = `${reg.date}-${reg.className}`;
                 if (!acc[key]) {
                     acc[key] = { date: reg.date, className: reg.className, meals: {} };
@@ -759,6 +798,11 @@ const refetchAnnouncements = useCallback(async (): Promise<void> => {
             }, {} as Record<string, ExportableRow>);
             
             const exportableData = Object.values(dataByDateAndClass).sort((a: ExportableRow, b: ExportableRow) => b.date.localeCompare(a.date) || a.className.localeCompare(b.className));
+
+            if (exportableData.length === 0) {
+                addToast('Không có dữ liệu trong khoảng thời gian đã chọn để xuất file.', 'error');
+                return;
+            }
             
             const totals = exportableData.reduce((acc, item: ExportableRow) => {
                 acc[MealType.KidsBreakfast] = (acc[MealType.KidsBreakfast] || 0) + (item.meals[MealType.KidsBreakfast]?.count || 0);
@@ -830,7 +874,7 @@ const refetchAnnouncements = useCallback(async (): Promise<void> => {
             console.error("Export failed", e);
             addToast("Xuất file thất bại. Vui lòng thử lại.", 'error');
         }
-  }, [getRegistrations, addToast]);
+  }, [getRegistrations, addToast, currentUser]);
 
   const requestEdit = useCallback((className: string, date: string) => {
     setEditingInfo({ className, date });
@@ -1041,6 +1085,22 @@ const refetchAnnouncements = useCallback(async (): Promise<void> => {
             return false;
         }
     }, [addToast, logAction, users, canWriteUser, triggerRefetch]);
+
+    const resetUserPassword = useCallback(async (userId: string, newPassword: string): Promise<boolean> => {
+        if (!canWriteUser()) { addToast("Bạn không có quyền đặt lại mật khẩu.", "error"); return false; }
+        const user = users.find(u => u.id === userId);
+        try {
+            const { error } = await supabase.rpc('admin_reset_password', { p_user_id: userId, p_new_password: newPassword });
+            if (error) throw error;
+            await logAction('RESET_PASSWORD', { userId, email: user?.email });
+            addToast(`Đã đặt lại mật khẩu cho "${user?.displayName || userId}".`, 'success');
+            return true;
+        } catch (error) {
+            console.error("Failed to reset password", error);
+            addToast("Lỗi khi đặt lại mật khẩu.", "error");
+            return false;
+        }
+    }, [addToast, logAction, users, canWriteUser]);
     
     const refreshUsers = useCallback(async () => {
         try {
@@ -1248,8 +1308,8 @@ const refetchAnnouncements = useCallback(async (): Promise<void> => {
     
   const value = useMemo(() => ({
     editingInfo, classes, users, announcements, announcementsLoading, unreadAnnouncementsCount, hasMoreAnnouncements, loadMoreAnnouncements, dataVersion, recentlyUpdatedKeys, showBackupPrompt, isAnnouncementRead,
-    addRegistrations, updateRegistrations, requestEdit, clearEditing, deleteRegistrations, deleteMultipleRegistrationsByDate, addClass, updateClass, deleteClass, getRegistrations, updateUser, deleteUser, approveUser, rejectUser, refreshUsers, addAnnouncement, updateAnnouncement, deleteAnnouncement, markAnnouncementsAsRead, getAuditLogs, deleteAuditLogs, exportData, dismissBackupPrompt, checkBackupNow: checkForBackupPrompt, archiveRegistrationsByMonth, getArchivedRegistrations, deleteArchivedRegistrations, getRegisteredClasses
-  }), [editingInfo, classes, users, announcements, announcementsLoading, unreadAnnouncementsCount, hasMoreAnnouncements, loadMoreAnnouncements, dataVersion, recentlyUpdatedKeys, showBackupPrompt, isAnnouncementRead, addRegistrations, updateRegistrations, requestEdit, clearEditing, deleteRegistrations, deleteMultipleRegistrationsByDate, addClass, updateClass, deleteClass, getRegistrations, updateUser, deleteUser, approveUser, rejectUser, refreshUsers, addAnnouncement, updateAnnouncement, deleteAnnouncement, markAnnouncementsAsRead, getAuditLogs, deleteAuditLogs, exportData, dismissBackupPrompt, checkForBackupPrompt, archiveRegistrationsByMonth, getArchivedRegistrations, deleteArchivedRegistrations, getRegisteredClasses]);
+    addRegistrations, updateRegistrations, requestEdit, clearEditing, deleteRegistrations, deleteMultipleRegistrationsByDate, addClass, updateClass, deleteClass, getRegistrations, updateUser, deleteUser, approveUser, rejectUser, resetUserPassword, refreshUsers, addAnnouncement, updateAnnouncement, deleteAnnouncement, markAnnouncementsAsRead, getAuditLogs, deleteAuditLogs, exportData, dismissBackupPrompt, checkBackupNow: checkForBackupPrompt, archiveRegistrationsByMonth, getArchivedRegistrations, deleteArchivedRegistrations, getRegisteredClasses
+  }), [editingInfo, classes, users, announcements, announcementsLoading, unreadAnnouncementsCount, hasMoreAnnouncements, loadMoreAnnouncements, dataVersion, recentlyUpdatedKeys, showBackupPrompt, isAnnouncementRead, addRegistrations, updateRegistrations, requestEdit, clearEditing, deleteRegistrations, deleteMultipleRegistrationsByDate, addClass, updateClass, deleteClass, getRegistrations, updateUser, deleteUser, approveUser, rejectUser, resetUserPassword, refreshUsers, addAnnouncement, updateAnnouncement, deleteAnnouncement, markAnnouncementsAsRead, getAuditLogs, deleteAuditLogs, exportData, dismissBackupPrompt, checkForBackupPrompt, archiveRegistrationsByMonth, getArchivedRegistrations, deleteArchivedRegistrations, getRegisteredClasses]);
 
   return (
     <DataContext.Provider value={value}>

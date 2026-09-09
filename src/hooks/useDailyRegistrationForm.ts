@@ -113,10 +113,17 @@ export const useDailyRegistrationForm = (options?: { onSuccess?: () => void }) =
         onSuccess?.();
     } catch (error: any) {
         if (String(error?.message ?? '').includes('STALE_DATA')) {
-            resetForm();
+            // Keep the values the user typed (the toast says so) and only refresh
+            // the baseline so re-saving compares against the newest data.
+            const { registrations: fresh } = await getRegistrations({ classNames: [className], dates: [date, getBreakfastDateFrom(date)], getAll: true });
+            if (overwriteConfirmation) {
+                setOverwriteConfirmation(prev => prev ? { ...prev, existing: fresh } : prev);
+            } else {
+                setOriginalRegistrations(fresh);
+            }
         }
     }
-  }, [addRegistrations, updateRegistrations, isEditing, className, addToast, resetForm, originalRegistrations, overwriteConfirmation, onSuccess]);
+  }, [addRegistrations, updateRegistrations, isEditing, className, addToast, resetForm, originalRegistrations, overwriteConfirmation, onSuccess, getRegistrations, date]);
 
   const validate = useCallback(() => {
       const newErrors: Record<string, string> = {};
